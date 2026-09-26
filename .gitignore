@@ -1,0 +1,22 @@
+# Compiled programs
+*.exe
+*.out
+game_of_life_cpu
+game_of_life_cuda
+
+# Compiler and linker output
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# OS files
+.DS_Store
+Thumbs.db
