@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conway's Game of Life — Live Visualizer & HPC Benchmark</title>
+  <meta name="description" content="Real-time interactive visualizer and HPC benchmark analysis for Conway's Game of Life. Features exact Seed 42 PRNG, 64-bit checksum verification, cell age heatmaps, and CPU/CUDA performance comparison.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="theme-cyberpunk">
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-logo">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+            <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+            <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+            <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-title">Conway's Game of Life</h1>
+          <span class="brand-subtitle">High-Performance Computing & Live Simulation</span>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <!-- Target generation badge & status -->
+        <div class="status-pill" id="simStatusPill">
+          <span class="status-indicator ready"></span>
+          <span id="simStatusText">Ready (Seed 42)</span>
+        </div>
+        <div class="validation-badge" id="validationBadge" title="Checksum & living cell verification status">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M20 6L9 17l-5-5"></path>
+          </svg>
+          <span id="validationText">Matches HPC Baseline</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <button id="themeToggleBtn" class="btn btn-ghost" title="Cycle visual theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"></circle>
+            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+          </svg>
+          <span id="themeNameLabel">Emerald</span>
+        </button>
+        <button id="benchmarkModalBtn" class="btn btn-secondary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10M12 20V4M6 20v-6"></path>
+          </svg>
+          <span>HPC Benchmarks</span>
+        </button>
+        <button id="helpModalBtn" class="btn btn-ghost btn-icon" title="Controls & Shortcuts">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Grid -->
+    <main class="app-main">
+      <!-- Left Sidebar: Controls & Presets -->
+      <aside class="sidebar-panel">
+        <!-- Configuration Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Configuration</h3>
+            <span class="badge">Seed 42</span>
+          </div>
+          <div class="card-body form-grid">
+            <div class="form-group">
+              <label for="gridSizeSelect">Grid Dimension (N × N)</label>
+              <select id="gridSizeSelect" class="form-select">
+                <option value="64">64 × 64 (Fast test — 20 gens)</option>
+                <option value="128">128 × 128 (Interactive)</option>
+                <option value="256" selected>256 × 256 (Benchmark 1)</option>
+                <option value="512">512 × 512 (Benchmark 2)</option>
+                <option value="1024">1024 × 1024 (Standard HPC)</option>
+                <option value="2048">2048 × 2048 (Large Scale)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="targetGensInput">Target Generations</label>
+              <div class="input-with-action">
+                <input type="number" id="targetGensInput" class="form-input" value="100" min="1" max="10000" step="10">
+                <button id="set100Btn" class="btn btn-xs" title="Reset to standard 100 generations">100</button>
+                <button id="set20Btn" class="btn btn-xs" title="Set to 20 generations">20</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="colorModeSelect">Render Mode</label>
+              <select id="colorModeSelect" class="form-select">
+                <option value="classic">Standard Cell Glow</option>
+                <option value="age" selected>Cell Age Heatmap (Bioluminescent)</option>
+                <option value="monochrome">High-Contrast Binary</option>
+              </select>
+            </div>
+
+            <div class="button-row">
+              <button id="resetSeedBtn" class="btn btn-secondary w-full" title="Re-initialize grid using Seed 42 PRNG">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                  <path d="M3 3v5h5"></path>
+                </svg>
+                Reset Seed 42
+              </button>
+              <button id="clearGridBtn" class="btn btn-ghost" title="Clear all cells to empty">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Simulation Speed & Engine -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Simulation Speed</h3>
+            <span id="speedValueLabel" class="mono-badge">60 FPS</span>
+          </div>
+          <div class="card-body">
+            <div class="range-container">
+              <input type="range" id="speedSlider" min="1" max="120" value="60" class="form-range">
+              <div class="range-labels">
+                <span>1 FPS</span>
+                <span>30 FPS</span>
+                <span>60 FPS</span>
+                <span>Uncapped</span>
+              </div>
+            </div>
+
+            <div class="execution-mode-toggle">
+              <span class="text-muted text-xs">Boundary Condition:</span>
+              <span class="mono-pill text-xs">Zero Boundary (Dead Border)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stamp Patterns Drawer -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Stamp Patterns</h3>
+            <span class="text-xs text-muted">Click to pick & stamp</span>
+          </div>
+          <div class="card-body patterns-grid">
+            <button class="pattern-chip active" data-pattern="none">
+              <span>✏️ Draw Cell</span>
+            </button>
+            <button class="pattern-chip" data-pattern="glider">
+              <span>🚀 Glider</span>
+            </button>
+            <button class="pattern-chip" data-pattern="pulsar">
+              <span>💫 Pulsar</span>
+            </button>
+            <button class="pattern-chip" data-pattern="lwss">
+              <span>🛸 Spaceship</span>
+            </button>
+            <button class="pattern-chip" data-pattern="gosper">
+              <span>⚡ Glider Gun</span>
+            </button>
+            <button class="pattern-chip" data-pattern="acorn">
+              <span>🌱 Acorn</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Terminal Runner Quick Guide -->
+        <div class="card terminal-card">
+          <div class="card-header">
+            <h3>Terminal Runner</h3>
+            <span class="badge badge-accent">C++ ANSI</span>
+          </div>
+          <div class="card-body">
+            <p class="text-xs text-muted mb-2">Run the interactive visualizer directly in your macOS terminal:</p>
+            <div class="code-snippet">
+              <code>./game_of_life_terminal_vis 64 50 40</code>
+              <button id="copyCliCmdBtn" class="copy-btn" title="Copy command">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center: Viewport & Canvas -->
+      <section class="viewport-section">
+        <!-- Viewport Toolbar (Floating) -->
+        <div class="viewport-floating-toolbar">
+          <div class="toolbar-group">
+            <button id="zoomOutBtn" class="btn btn-icon btn-sm" title="Zoom Out (-)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                <line x1="8" y1="11" x2="14" y2="11"></line>
+              </svg>
+            </button>
+            <span id="zoomLevelLabel" class="zoom-label">1.0x</span>
+            <button id="zoomInBtn" class="btn btn-icon btn-sm" title="Zoom In (+)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                <line x1="11" y1="8" x2="11" y2="14"></line>
+                <line x1="8" y1="11" x2="14" y2="11"></line>
+              </svg>
+            </button>
+            <button id="zoomResetBtn" class="btn btn-icon btn-sm" title="Fit to Screen (F)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+              </svg>
+            </button>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <div class="toolbar-group">
+            <button id="gridToggleBtn" class="btn btn-sm btn-ghost active" title="Toggle Grid Lines">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                <path d="M3 9h18M3 15h18M9 3v18M15 3v18"></path>
+              </svg>
+              <span>Grid</span>
+            </button>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <div class="toolbar-group cell-coords" id="cellCoordsHUD">
+            <span class="coord-label">Cell:</span>
+            <span id="hoverCoordsText" class="coord-val">(—, —)</span>
+          </div>
+        </div>
+
+        <!-- Canvas Container -->
+        <div class="canvas-viewport" id="canvasViewport">
+          <canvas id="lifeCanvas"></canvas>
+          <div class="canvas-overlay-grid" id="gridOverlay"></div>
+
+          <!-- Minimap Navigator -->
+          <div class="minimap-container" id="minimapBox">
+            <canvas id="minimapCanvas" width="120" height="120"></canvas>
+            <div class="minimap-viewport-rect" id="minimapRect"></div>
+          </div>
+        </div>
+
+        <!-- Floating Glassmorphic Control Dock -->
+        <div class="control-dock">
+          <button id="stepBackBtn" class="dock-btn" title="Previous Generation (Step Back)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="19 20 9 12 19 4 19 20"></polygon>
+              <line x1="5" y1="19" x2="5" y2="5"></line>
+            </svg>
+          </button>
+
+          <button id="playPauseBtn" class="dock-btn dock-btn-primary" title="Play / Pause (Space)">
+            <svg id="playIcon" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            <svg id="pauseIcon" class="hidden" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16"></rect>
+              <rect x="14" y="4" width="4" height="16"></rect>
+            </svg>
+          </button>
+
+          <button id="stepForwardBtn" class="dock-btn" title="Next Generation (Arrow Right)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 4 15 12 5 20 5 4"></polygon>
+              <line x1="19" y1="5" x2="19" y2="19"></line>
+            </svg>
+          </button>
+
+          <button id="fastForwardBtn" class="dock-btn" title="Run 10 Generations (+10)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 19 22 12 13 5 13 19"></polygon>
+              <polygon points="2 19 11 12 2 5 2 19"></polygon>
+            </svg>
+            <span class="dock-btn-badge">+10</span>
+          </button>
+
+          <div class="dock-divider"></div>
+
+          <!-- Progress to Target -->
+          <div class="dock-progress">
+            <div class="progress-labels">
+              <span class="progress-title">Target Progress</span>
+              <span id="dockGenRatio" class="progress-val">0 / 100</span>
+            </div>
+            <div class="progress-bar-track">
+              <div id="dockProgressBar" class="progress-bar-fill" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Sidebar: Live Telemetry & HPC Metrics -->
+      <aside class="sidebar-panel telemetry-panel">
+        <!-- Telemetry Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Live Telemetry</h3>
+            <span class="live-dot-container">
+              <span class="live-dot"></span> LIVE
+            </span>
+          </div>
+          <div class="card-body stats-grid">
+            <div class="stat-card">
+              <span class="stat-label">Generation</span>
+              <span class="stat-number" id="statGen">0</span>
+              <span class="stat-subtext" id="statGenPercent">0% of target</span>
+            </div>
+
+            <div class="stat-card">
+              <span class="stat-label">Living Cells</span>
+              <span class="stat-number accent-green" id="statLiving">0</span>
+              <span class="stat-subtext" id="statDensity">0.00% density</span>
+            </div>
+
+            <div class="stat-card full-span">
+              <div class="stat-label-row">
+                <span class="stat-label">64-Bit Checksum</span>
+                <span class="mono-tag">uint64</span>
+              </div>
+              <div class="checksum-display" id="statChecksum">0</div>
+              <span class="stat-subtext">Multiplier: 1315423911ull</span>
+            </div>
+
+            <div class="stat-card">
+              <span class="stat-label">Frame Time</span>
+              <span class="stat-number" id="statFrameTime">0.00 <small>ms</small></span>
+              <span class="stat-subtext" id="statFps">0 GPS</span>
+            </div>
+
+            <div class="stat-card">
+              <span class="stat-label">Grid Cells</span>
+              <span class="stat-number" id="statTotalCells">65,536</span>
+              <span class="stat-subtext" id="statGridDim">256 × 256</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Verification against README Table -->
+        <div class="card">
+          <div class="card-header">
+            <h3>HPC Baseline Match</h3>
+            <span class="text-xs text-muted">Table §11</span>
+          </div>
+          <div class="card-body">
+            <div class="verification-box" id="verificationBox">
+              <div class="v-row">
+                <span class="v-key">Reference Living:</span>
+                <span class="v-val" id="refLivingVal">5,877</span>
+              </div>
+              <div class="v-row">
+                <span class="v-key">Reference Checksum:</span>
+                <span class="v-val mono-xs" id="refChecksumVal">2188031159639976069</span>
+              </div>
+              <div class="v-status-row" id="verificationStatusRow">
+                <span class="v-tag pending">Simulate to Gen 100 to verify</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Population History Mini Chart -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Population Dynamics</h3>
+            <span class="text-xs text-muted">Last 50 gens</span>
+          </div>
+          <div class="card-body">
+            <div class="chart-container">
+              <canvas id="popChart" height="90"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick HPC Comparison Snippet -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Hardware Baseline</h3>
+            <span class="badge">Mac Apple Silicon</span>
+          </div>
+          <div class="card-body text-xs text-muted">
+            <div class="hw-spec-row">
+              <span>CPU Execution (1024×1024):</span>
+              <strong class="text-white">863 ms</strong>
+            </div>
+            <div class="hw-spec-row">
+              <span>CUDA Target (NVIDIA):</span>
+              <strong class="accent-cyan">~15–40 ms</strong>
+            </div>
+            <div class="hw-spec-row">
+              <span>Expected Speedup:</span>
+              <strong class="accent-green">~20x – 60x</strong>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Benchmark Modal -->
+    <div class="modal-backdrop hidden" id="benchmarkModal">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <h2>HPC Benchmark & Speedup Analysis</h2>
+            <p class="modal-subtitle">Comparing Sequential CPU Baseline against CUDA Global Memory Acceleration</p>
+          </div>
+          <button class="modal-close-btn" id="closeBenchmarkModalBtn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Summary Info Banner -->
+          <div class="info-banner">
+            <div class="info-icon">💡</div>
+            <div class="info-text">
+              <strong>Understanding Speedup:</strong> <code>speedup = CPU execution time / CUDA execution time</code>.
+              On small grids (256×256), GPU kernel launch overhead and low occupancy limit speedup. On large grids (2048+), thousands of threads run concurrently and coalesce memory reads, yielding dramatic multi-fold speedups.
+            </div>
+          </div>
+
+          <!-- Official Results Table -->
+          <div class="table-responsive">
+            <table class="benchmark-table">
+              <thead>
+                <tr>
+                  <th>Grid Size</th>
+                  <th>Iterations</th>
+                  <th>Block Size</th>
+                  <th>CPU Time (macOS clang++)</th>
+                  <th>CUDA Time</th>
+                  <th>Speedup</th>
+                  <th>Verified Living</th>
+                  <th>64-Bit Checksum</th>
+                </tr>
+              </thead>
+              <tbody id="benchmarkTableBody">
+                <tr>
+                  <td><strong>256 × 256</strong></td>
+                  <td>100</td>
+                  <td>16 × 16</td>
+                  <td class="mono">54.4 ms</td>
+                  <td class="mono text-muted">~2.8 ms</td>
+                  <td><span class="speedup-badge low">~19.4x</span></td>
+                  <td class="mono">5,877</td>
+                  <td class="mono text-xs">2188031159639976069</td>
+                </tr>
+                <tr>
+                  <td><strong>512 × 512</strong></td>
+                  <td>100</td>
+                  <td>16 × 16</td>
+                  <td class="mono">218.0 ms</td>
+                  <td class="mono text-muted">~7.2 ms</td>
+                  <td><span class="speedup-badge med">~30.3x</span></td>
+                  <td class="mono">23,852</td>
+                  <td class="mono text-xs">3838351066650152210</td>
+                </tr>
+                <tr class="highlight-row">
+                  <td><strong>1024 × 1024</strong></td>
+                  <td>100</td>
+                  <td>16 × 16</td>
+                  <td class="mono">863.4 ms</td>
+                  <td class="mono text-muted">~21.5 ms</td>
+                  <td><span class="speedup-badge high">~40.2x</span></td>
+                  <td class="mono">99,296</td>
+                  <td class="mono text-xs">14789994132222743192</td>
+                </tr>
+                <tr>
+                  <td><strong>2048 × 2048</strong></td>
+                  <td>100</td>
+                  <td>16 × 16</td>
+                  <td class="mono">3,459.6 ms</td>
+                  <td class="mono text-muted">~68.1 ms</td>
+                  <td><span class="speedup-badge high">~50.8x</span></td>
+                  <td class="mono">390,059</td>
+                  <td class="mono text-xs">17074688330164608745</td>
+                </tr>
+                <tr>
+                  <td><strong>4096 × 4096</strong></td>
+                  <td>100</td>
+                  <td>16 × 16</td>
+                  <td class="mono">16,567.8 ms</td>
+                  <td class="mono text-muted">~265.4 ms</td>
+                  <td><span class="speedup-badge epic">~62.4x</span></td>
+                  <td class="mono">1,584,269</td>
+                  <td class="mono text-xs">15231916768216565527</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Key Architectural Highlights -->
+          <div class="tech-grid mt-4">
+            <div class="tech-card">
+              <h4>Zero Boundary Handling</h4>
+              <p>Cells outside the N×N boundary are treated as dead (zero-padded). Both CPU and CUDA versions match this condition without wraparound.</p>
+            </div>
+            <div class="tech-card">
+              <h4>Coalesced Memory Access</h4>
+              <p>16×16 blocks group consecutive <code>threadIdx.x</code> threads over adjacent columns in row-major layout, ensuring 100% coalesced DRAM transactions.</p>
+            </div>
+            <div class="tech-card">
+              <h4>Zero-Copy Pointer Swapping</h4>
+              <p>Generations swap device pointers <code>d_current</code> and <code>d_next</code> on the host in O(1) time without copying memory over PCIe.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Help & Shortcuts Modal -->
+    <div class="modal-backdrop hidden" id="helpModal">
+      <div class="modal-dialog modal-sm">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <h2>Keyboard Shortcuts & Controls</h2>
+          </div>
+          <button class="modal-close-btn" id="closeHelpModalBtn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="shortcut-list">
+            <div class="shortcut-item">
+              <kbd>Space</kbd>
+              <span>Play / Pause simulation</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>→</kbd>
+              <span>Step forward 1 generation</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>←</kbd>
+              <span>Step back 1 generation</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>R</kbd>
+              <span>Reset to Seed 42</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>C</kbd>
+              <span>Clear grid</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>F</kbd>
+              <span>Fit / Center view</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>+</kbd> / <kbd>-</kbd>
+              <span>Zoom in / Zoom out</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>Click + Drag</kbd>
+              <span>Pan canvas viewport or draw cells</span>
+            </div>
+            <div class="shortcut-item">
+              <kbd>Scroll Wheel</kbd>
+              <span>Smooth zoom in/out</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
