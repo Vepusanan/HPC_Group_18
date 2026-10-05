@@ -1,8 +1,30 @@
-// Sequential Conway's Game of Life on the CPU.
+// ==============================================================================
+// High Performance Computing - Assignment 1
+// Conway's Game of Life: Sequential CPU Implementation
+// ==============================================================================
 //
-// This is the baseline for the CUDA version. Both programs use the same grid
-// size, random seed, initialisation order, rules, dead borders, and iteration
-// count. The living-cell count and checksum of the final grid should match.
+// Technical Characteristics & Design Decisions:
+// 1. Contiguous 1D Allocation for 2D Grid:
+//    Instead of fragmented dynamic allocations (such as int** or vector<vector<int>>),
+//    the N x N grid is allocated as a single contiguous memory block.
+//    Cell (row, col) is mapped via the row-major formula: index = row * N + col.
+//    Rationale:
+//    - Exploits spatial and temporal cache locality (L1/L2 cache line prefetching).
+//    - Eliminates multiple levels of pointer indirection (pointer chasing).
+//    - Guarantees algorithmic and memory layout parity with the CUDA GPU version.
+//
+// 2. Zero Boundary Condition (Dead Borders):
+//    Cells outside the N x N grid domain are strictly treated as dead (state = 0).
+//
+// 3. Double-Buffering / Pointer Swapping:
+//    Two grids ('currentGrid' and 'nextGrid') are maintained. Each generation reads
+//    from 'currentGrid' and writes to 'nextGrid', followed by an O(1) buffer pointer swap.
+//    This prevents race conditions and avoids copying memory between generations.
+//
+// 4. Isolated Benchmark Timing:
+//    Only the 100 simulation iterations are timed using std::chrono::high_resolution_clock.
+//    Memory allocation, grid initialization, validation, and I/O are strictly excluded.
+// ==============================================================================
 
 #include <cerrno>
 #include <chrono>
@@ -15,7 +37,7 @@
 #include <utility>
 #include <vector>
 
-// Shared with the CUDA program. Do not change one without changing the other.
+// Benchmark Configuration & Constants
 constexpr unsigned int RANDOM_SEED = 42;
 constexpr int DEFAULT_GRID_SIZE = 1024;
 constexpr int DEFAULT_ITERATIONS = 100;
@@ -29,7 +51,7 @@ void printUsage(const char* program) {
               << "Example: " << program << " 1024 100\n";
 }
 
-// Accepts a positive integer up to maxValue. Rejects words, decimals, and signs.
+// Parses positive command-line arguments safely
 bool parsePositiveInt(const char* text, int& value, int maxValue) {
     errno = 0;
     char* end = nullptr;
@@ -46,96 +68,94 @@ bool parsePositiveInt(const char* text, int& value, int maxValue) {
     return true;
 }
 
-// One step of the fixed generator. The top bit is used because the low bits of
-// this kind of generator are less mixed. Alive is 1 and dead is 0.
-int nextRandomCell(unsigned int& state) {
+// Fast deterministic LCG PRNG (Numerical Recipes: a=1664525, c=1013904223).
+// Using the most significant bit (state >> 31) ensures uniform 0 or 1 states.
+inline int nextRandomCell(unsigned int& state) {
     state = 1664525u * state + 1013904223u;
     return static_cast<int>(state >> 31);
 }
 
-// Fills an N x N grid in row-major order.
-// Cell (row, col) is stored at index row * N + col.
-// The same loop and seed are used in the CUDA program, so both start identical.
-void initializeGrid(std::vector<int>& grid, int N) {
-    unsigned int state = RANDOM_SEED;
-
-    for (int row = 0; row < N; ++row) {
-        for (int col = 0; col < N; ++col) {
-            grid[row * N + col] = nextRandomCell(state);
-        }
+// Initializes the grid deterministically with seed 42 in row-major order.
+void initializeGrid(int* grid, int N, unsigned int seed = RANDOM_SEED) {
+    unsigned int state = seed;
+    const size_t totalCells = static_cast<size_t>(N) * N;
+    for (size_t i = 0; i < totalCells; ++i) {
+        grid[i] = nextRandomCell(state);
     }
 }
 
-// Counts the eight surrounding cells. Anything outside the grid is dead, so it
-// is skipped. Living cells are stored as 1, so adding the stored value counts them.
-int countNeighbours(const std::vector<int>& grid, int N, int row, int col) {
-    int neighbours = 0;
+// Counts the 8 Moore neighbours for cell (row, col).
+// Out-of-bound coordinates are treated as dead (zero boundary).
+inline int countNeighbors(const int* grid, int N, int row, int col) {
+    int liveNeighbors = 0;
 
-    for (int deltaRow = -1; deltaRow <= 1; ++deltaRow) {
-        for (int deltaCol = -1; deltaCol <= 1; ++deltaCol) {
-            if (deltaRow == 0 && deltaCol == 0) {
-                continue;
+    for (int dr = -1; dr <= 1; ++dr) {
+        for (int dc = -1; dc <= 1; ++dc) {
+            if (dr == 0 && dc == 0) continue;
+
+            int nr = row + dr;
+            int nc = col + dc;
+
+            // Zero boundary check
+            if (nr >= 0 && nr < N && nc >= 0 && nc < N) {
+                liveNeighbors += grid[nr * N + nc];
             }
-
-            int neighbourRow = row + deltaRow;
-            int neighbourCol = col + deltaCol;
-
-            if (neighbourRow < 0 || neighbourRow >= N ||
-                neighbourCol < 0 || neighbourCol >= N) {
-                continue;
-            }
-
-            neighbours += grid[neighbourRow * N + neighbourCol];
         }
     }
 
-    return neighbours;
+    return liveNeighbors;
 }
 
-// Conway's rules for one cell:
-//   - a live cell with 2 or 3 live neighbours survives
-//   - a dead cell with exactly 3 live neighbours becomes alive
-//   - every other cell is dead in the next generation
-int nextCellState(int alive, int neighbours) {
-    if (alive == 1 && (neighbours == 2 || neighbours == 3)) {
+// Applies Conway's four rules of life:
+// 1. Live cell with < 2 live neighbours dies (underpopulation).
+// 2. Live cell with 2 or 3 live neighbours survives.
+// 3. Live cell with > 3 live neighbours dies (overpopulation).
+// 4. Dead cell with exactly 3 live neighbours becomes alive (reproduction).
+inline int nextCellState(int alive, int neighbors) {
+    if (alive == 1 && (neighbors == 2 || neighbors == 3)) {
         return 1;
     }
-    if (alive == 0 && neighbours == 3) {
+    if (alive == 0 && neighbors == 3) {
         return 1;
     }
     return 0;
 }
 
-// Reads currentGrid and writes a full generation into nextGrid.
-// The two grids are separate, so a new value cannot change a neighbour count
-// that is still being calculated for this same generation.
-void computeNextGeneration(const std::vector<int>& currentGrid,
-                           std::vector<int>& nextGrid,
-                           int N) {
+// Computes one generation from currentGrid into nextGrid.
+void updateGrid(const int* currentGrid, int* nextGrid, int N) {
     for (int row = 0; row < N; ++row) {
+        const int rowOffset = row * N;
         for (int col = 0; col < N; ++col) {
-            int neighbours = countNeighbours(currentGrid, N, row, col);
-            int alive = currentGrid[row * N + col];
-            nextGrid[row * N + col] = nextCellState(alive, neighbours);
+            int neighbors = countNeighbors(currentGrid, N, row, col);
+            int alive = currentGrid[rowOffset + col];
+            nextGrid[rowOffset + col] = nextCellState(alive, neighbors);
         }
     }
 }
 
-long long countLivingCells(const std::vector<int>& grid) {
-    long long livingCells = 0;
-    for (size_t i = 0; i < grid.size(); ++i) {
-        livingCells += grid[i];
+// Executes the simulation loop for the specified iterations using double-buffering.
+void runSimulation(int*& currentGrid, int*& nextGrid, int N, int iterations) {
+    for (int it = 0; it < iterations; ++it) {
+        updateGrid(currentGrid, nextGrid, N);
+        // O(1) buffer swap
+        std::swap(currentGrid, nextGrid);
     }
-    return livingCells;
 }
 
-// Mixes every cell, in order, into one number. The same function in the CUDA
-// program makes the final grids comparable with a single printed value.
-unsigned long long computeChecksum(const std::vector<int>& grid) {
+// Counts total living cells in the grid for correctness validation.
+long long countLivingCells(const int* grid, size_t cellCount) {
+    long long living = 0;
+    for (size_t i = 0; i < cellCount; ++i) {
+        living += grid[i];
+    }
+    return living;
+}
+
+// 64-bit checksum generator for full-grid bitwise verification against CUDA.
+unsigned long long computeChecksum(const int* grid, size_t cellCount) {
     unsigned long long checksum = 0;
-    for (size_t i = 0; i < grid.size(); ++i) {
-        checksum = checksum * CHECKSUM_MULTIPLIER +
-                   static_cast<unsigned long long>(grid[i]);
+    for (size_t i = 0; i < cellCount; ++i) {
+        checksum = checksum * CHECKSUM_MULTIPLIER + static_cast<unsigned long long>(grid[i]);
     }
     return checksum;
 }
@@ -149,58 +169,57 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     if (argc >= 2 && !parsePositiveInt(argv[1], N, MAX_GRID_SIZE)) {
-        std::cerr << "Grid size must be an integer from 1 to " << MAX_GRID_SIZE << ".\n";
+        std::cerr << "Error: Grid size must be an integer between 1 and " << MAX_GRID_SIZE << ".\n";
         printUsage(argv[0]);
         return 1;
     }
     if (argc >= 3 && !parsePositiveInt(argv[2], iterations, INT_MAX)) {
-        std::cerr << "Iterations must be a positive integer.\n";
+        std::cerr << "Error: Iterations must be a positive integer.\n";
         printUsage(argv[0]);
         return 1;
     }
 
-    // One contiguous block per grid. row * N + col is the 2D address.
-    // Separate rows (vector<vector<int>>) would add pointer chasing and would
-    // make this a weaker baseline against the GPU.
     const size_t cellCount = static_cast<size_t>(N) * static_cast<size_t>(N);
-    std::vector<int> currentGrid;
-    std::vector<int> nextGrid;
+
+    // Contiguous memory allocation using std::vector to guarantee exception-safe cleanup
+    std::vector<int> gridA;
+    std::vector<int> gridB;
 
     try {
-        currentGrid.resize(cellCount);
-        nextGrid.resize(cellCount);
+        gridA.resize(cellCount);
+        gridB.resize(cellCount);
     } catch (const std::bad_alloc&) {
-        std::cerr << "Not enough memory for a " << N << " x " << N << " grid.\n";
+        std::cerr << "Error: Insufficient host memory to allocate " << N << " x " << N << " grid.\n";
         return 1;
     }
 
-    initializeGrid(currentGrid, N);
+    int* currentGrid = gridA.data();
+    int* nextGrid = gridB.data();
 
-    // Timed section: the 100 generations only.
-    // Grid setup above, and the checksum below, are outside this clock.
-    const auto start = std::chrono::steady_clock::now();
+    // Deterministic initialization (excluded from benchmark timing)
+    initializeGrid(currentGrid, N, RANDOM_SEED);
 
-    for (int generation = 0; generation < iterations; ++generation) {
-        computeNextGeneration(currentGrid, nextGrid, N);
+    // ==========================================
+    // Benchmark Timed Region: Simulation only
+    // ==========================================
+    const auto startTime = std::chrono::high_resolution_clock::now();
 
-        // Double buffering. The vectors exchange their storage in constant time.
-        // After the swap, currentGrid is the generation just computed.
-        std::swap(currentGrid, nextGrid);
-    }
+    runSimulation(currentGrid, nextGrid, N, iterations);
 
-    const auto end = std::chrono::steady_clock::now();
-    const std::chrono::duration<double, std::milli> elapsed = end - start;
+    const auto endTime = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::milli> elapsedTime = endTime - startTime;
+    // ==========================================
 
-    // currentGrid holds generation `iterations` because the loop swaps once per generation.
-    const long long livingCells = countLivingCells(currentGrid);
-    const unsigned long long checksum = computeChecksum(currentGrid);
+    // Validation metrics
+    const long long livingCells = countLivingCells(currentGrid, cellCount);
+    const unsigned long long checksum = computeChecksum(currentGrid, cellCount);
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "----------------------------------------\n";
     std::cout << "Implementation: CPU\n";
     std::cout << "Grid size: " << N << " x " << N << "\n";
     std::cout << "Iterations: " << iterations << "\n";
-    std::cout << "Execution time (ms): " << elapsed.count() << "\n";
+    std::cout << "Execution time (ms): " << elapsedTime.count() << "\n";
     std::cout << "Living cells: " << livingCells << "\n";
     std::cout << "Checksum: " << checksum << "\n";
     std::cout << "----------------------------------------\n";
