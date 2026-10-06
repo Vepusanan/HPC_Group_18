@@ -1,3 +1,5 @@
+> **Draft — pending verified Colab results.** The existing numerical claims have not been reconciled with the current results files. Checksum agreement does not establish zero mismatched cells. Use the revised Colab notebook to obtain exact validation, timings and environment metadata before submitting this document.
+
 # High Performance Computing Technical Report
 ## Accelerated Simulation of Conway’s Game of Life: Sequential CPU Baseline vs. CUDA GPU Parallelization
 

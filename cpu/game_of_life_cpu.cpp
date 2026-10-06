@@ -22,7 +22,7 @@
 //    This prevents race conditions and avoids copying memory between generations.
 //
 // 4. Isolated Benchmark Timing:
-//    Only the 100 simulation iterations are timed using std::chrono::high_resolution_clock.
+//    Only the 100 simulation iterations are timed using std::chrono::steady_clock.
 //    Memory allocation, grid initialization, validation, and I/O are strictly excluded.
 // ==============================================================================
 
@@ -32,6 +32,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <iomanip>
+#include <fstream>
+#include <chrono>
 #include <iostream>
 #include <new>
 #include <utility>
@@ -45,7 +47,7 @@ constexpr int MAX_GRID_SIZE = 8192;
 constexpr unsigned long long CHECKSUM_MULTIPLIER = 1315423911ull;
 
 void printUsage(const char* program) {
-    std::cerr << "Usage: " << program << " [grid_size] [iterations]\n"
+    std::cerr << "Usage: " << program << " [grid_size] [iterations] [output_grid.bin]\n"
               << "Defaults: grid_size = " << DEFAULT_GRID_SIZE
               << ", iterations = " << DEFAULT_ITERATIONS << "\n"
               << "Example: " << program << " 1024 100\n";
@@ -151,7 +153,7 @@ long long countLivingCells(const int* grid, size_t cellCount) {
     return living;
 }
 
-// 64-bit checksum generator for full-grid bitwise verification against CUDA.
+// 64-bit diagnostic checksum; exact validation requires comparing every cell.
 unsigned long long computeChecksum(const int* grid, size_t cellCount) {
     unsigned long long checksum = 0;
     for (size_t i = 0; i < cellCount; ++i) {
@@ -160,11 +162,12 @@ unsigned long long computeChecksum(const int* grid, size_t cellCount) {
     return checksum;
 }
 
+#ifndef LIFE_NO_MAIN
 int main(int argc, char* argv[]) {
     int N = DEFAULT_GRID_SIZE;
     int iterations = DEFAULT_ITERATIONS;
 
-    if (argc > 3) {
+    if (argc > 4) {
         printUsage(argv[0]);
         return 1;
     }
@@ -202,19 +205,27 @@ int main(int argc, char* argv[]) {
     // ==========================================
     // Benchmark Timed Region: Simulation only
     // ==========================================
-    const auto startTime = std::chrono::high_resolution_clock::now();
+    const auto startTime = std::chrono::steady_clock::now();
 
     runSimulation(currentGrid, nextGrid, N, iterations);
 
-    const auto endTime = std::chrono::high_resolution_clock::now();
+    const auto endTime = std::chrono::steady_clock::now();
     const std::chrono::duration<double, std::milli> elapsedTime = endTime - startTime;
     // ==========================================
+
+    // Optional exact-grid export, outside all timing intervals (one byte per cell).
+    if (argc == 4) {
+        std::ofstream output(argv[3], std::ios::binary);
+        for (size_t i = 0; i < cellCount; ++i) output.put(static_cast<char>(currentGrid[i]));
+        output.close();
+        if (!output) { std::cerr << "Grid export failed\n"; return 1; }
+    }
 
     // Validation metrics
     const long long livingCells = countLivingCells(currentGrid, cellCount);
     const unsigned long long checksum = computeChecksum(currentGrid, cellCount);
 
-    std::cout << std::fixed << std::setprecision(3);
+    std::cout << std::fixed << std::setprecision(6);
     std::cout << "----------------------------------------\n";
     std::cout << "Implementation: CPU\n";
     std::cout << "Grid size: " << N << " x " << N << "\n";
@@ -226,3 +237,5 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
+#endif

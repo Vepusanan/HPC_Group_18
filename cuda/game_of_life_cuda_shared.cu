@@ -30,6 +30,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <iomanip>
+#include <fstream>
+#include <chrono>
 #include <iostream>
 #include <new>
 #include <vector>
@@ -206,6 +208,12 @@ int main(int argc, char* argv[]) {
     CUDA_CHECK(cudaEventCreate(&startKernel));
     CUDA_CHECK(cudaEventCreate(&stopKernel));
 
+    // Untimed warm-up in this process; restore initial state before measurement.
+    CUDA_CHECK(cudaMemcpy(d_current, hostGrid.data(), bytes, cudaMemcpyHostToDevice));
+    gameOfLifeSharedKernel<<<gridSize, blockSize>>>(d_current, d_next, N);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
     CUDA_CHECK(cudaMemcpy(d_current, hostGrid.data(), bytes, cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaEventRecord(startKernel));
@@ -227,10 +235,18 @@ int main(int argc, char* argv[]) {
     float kernelMs = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&kernelMs, startKernel, stopKernel));
 
+    // Optional exact-grid export, outside all timing intervals (one byte per cell).
+    if (argc == 4) {
+        std::ofstream output(argv[3], std::ios::binary);
+        for (size_t i = 0; i < cellCount; ++i) output.put(static_cast<char>(hostGrid.data()[i]));
+        output.close();
+        if (!output) { std::cerr << "Grid export failed\n"; return 1; }
+    }
+
     const long long livingCells = countLivingCells(hostGrid);
     const unsigned long long checksum = computeChecksum(hostGrid);
 
-    std::cout << std::fixed << std::setprecision(3);
+    std::cout << std::fixed << std::setprecision(6);
     std::cout << "----------------------------------------\n";
     std::cout << "Implementation: CUDA (Shared Memory Tiled)\n";
     std::cout << "GPU name: " << prop.name << "\n";

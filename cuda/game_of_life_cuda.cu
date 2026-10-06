@@ -14,7 +14,8 @@
 //    - Balances register pressure and active warp occupancy on Streaming Multiprocessors (SMs).
 //    - Threads in the same warp advance along columns (threadIdx.x), reading consecutive
 //      memory addresses in row-major layout (row * N + col).
-//    - Enables 100% coalesced 128-byte global memory transactions.
+//    - Each warp spans two 16-cell row segments; neighbour loads may be unaligned.
+//      Actual transaction efficiency and occupancy require profiling.
 //
 // 3. Device Memory Persistence & Pointer Swapping:
 //    Both current and next grids remain in GPU VRAM across all 100 iterations.
@@ -33,6 +34,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <iomanip>
+#include <fstream>
+#include <chrono>
 #include <iostream>
 #include <new>
 #include <vector>
@@ -61,7 +64,7 @@ constexpr int BLOCK_DIM_Y = 16;
     } while (0)
 
 void printUsage(const char* program) {
-    std::cerr << "Usage: " << program << " [grid_size] [iterations]\n"
+    std::cerr << "Usage: " << program << " [grid_size] [iterations] [output_grid.bin]\n"
               << "Defaults: grid_size = " << DEFAULT_GRID_SIZE
               << ", iterations = " << DEFAULT_ITERATIONS << "\n"
               << "Example: " << program << " 1024 100\n";
@@ -170,7 +173,7 @@ int main(int argc, char* argv[]) {
     int N = DEFAULT_GRID_SIZE;
     int iterations = DEFAULT_ITERATIONS;
 
-    if (argc > 3) {
+    if (argc > 4) {
         printUsage(argv[0]);
         return 1;
     }
@@ -217,16 +220,19 @@ int main(int argc, char* argv[]) {
 
     // Create CUDA timing events
     cudaEvent_t startKernel, stopKernel;
-    cudaEvent_t startTotal, stopTotal;
     CUDA_CHECK(cudaEventCreate(&startKernel));
     CUDA_CHECK(cudaEventCreate(&stopKernel));
-    CUDA_CHECK(cudaEventCreate(&startTotal));
-    CUDA_CHECK(cudaEventCreate(&stopTotal));
+
+    // Untimed warm-up in this process; restore initial state before measurement.
+    CUDA_CHECK(cudaMemcpy(d_current, hostGrid.data(), bytes, cudaMemcpyHostToDevice));
+    gameOfLifeKernel<<<gridSize, blockSize>>>(d_current, d_next, N);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // -------------------------------------------------------------
     // Measure Total End-to-End Time: H2D + Kernels + D2H
     // -------------------------------------------------------------
-    CUDA_CHECK(cudaEventRecord(startTotal));
+    const auto wallStart = std::chrono::steady_clock::now();
 
     // Initial Host-to-Device transfer
     CUDA_CHECK(cudaMemcpy(d_current, hostGrid.data(), bytes, cudaMemcpyHostToDevice));
@@ -252,20 +258,27 @@ int main(int argc, char* argv[]) {
     // Final Device-to-Host transfer (d_current contains the latest generation)
     CUDA_CHECK(cudaMemcpy(hostGrid.data(), d_current, bytes, cudaMemcpyDeviceToHost));
 
-    CUDA_CHECK(cudaEventRecord(stopTotal));
-    CUDA_CHECK(cudaEventSynchronize(stopTotal));
+    const auto wallStop = std::chrono::steady_clock::now();
 
     // Compute elapsed times
     float kernelMs = 0.0f;
-    float totalMs = 0.0f;
+    const double totalMs = std::chrono::duration<double, std::milli>(wallStop-wallStart).count();
     CUDA_CHECK(cudaEventElapsedTime(&kernelMs, startKernel, stopKernel));
-    CUDA_CHECK(cudaEventElapsedTime(&totalMs, startTotal, stopTotal));
+
 
     // Verification metrics
+    // Optional exact-grid export, outside all timing intervals (one byte per cell).
+    if (argc == 4) {
+        std::ofstream output(argv[3], std::ios::binary);
+        for (size_t i = 0; i < cellCount; ++i) output.put(static_cast<char>(hostGrid.data()[i]));
+        output.close();
+        if (!output) { std::cerr << "Grid export failed\n"; return 1; }
+    }
+
     const long long livingCells = countLivingCells(hostGrid);
     const unsigned long long checksum = computeChecksum(hostGrid);
 
-    std::cout << std::fixed << std::setprecision(3);
+    std::cout << std::fixed << std::setprecision(6);
     std::cout << "----------------------------------------\n";
     std::cout << "Implementation: CUDA (Global Memory)\n";
     std::cout << "GPU name: " << prop.name << "\n";
@@ -281,8 +294,6 @@ int main(int argc, char* argv[]) {
     // Clean up
     CUDA_CHECK(cudaEventDestroy(startKernel));
     CUDA_CHECK(cudaEventDestroy(stopKernel));
-    CUDA_CHECK(cudaEventDestroy(startTotal));
-    CUDA_CHECK(cudaEventDestroy(stopTotal));
     CUDA_CHECK(cudaFree(d_current));
     CUDA_CHECK(cudaFree(d_next));
 
