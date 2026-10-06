@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Run on the Colab GPU runtime: exact validation, then 100-generation benchmarks."""
-import csv
+"""CPU: python3 run_benchmarks.py; Colab GPU: python3 run_benchmarks.py --cuda."""
+import argparse
 import hashlib
 import json
 import math
@@ -27,99 +27,89 @@ def fields(output):
     return dict(line.split(': ', 1) for line in output.splitlines() if ': ' in line)
 
 
-def timing(values, key):
-    value = float(values[key])
+def timing(data, name):
+    value = float(data[name])
     if not math.isfinite(value) or value <= 0:
-        raise ValueError(f'Invalid measurement: {key}={value}')
+        raise ValueError('Invalid timing: ' + name)
     return value
 
 
-def validate(cpu_path, gpu_path, cells):
-    a, b = cpu_path.read_bytes(), gpu_path.read_bytes()
-    if len(a) != cells or len(b) != cells:
-        raise RuntimeError('Incomplete grid output')
-    mismatches = sum(x != y for x, y in zip(a, b))
-    if mismatches:
-        raise RuntimeError(f'Validation: FAILED ({mismatches} mismatched cells)')
-    print(f'Validation: PASSED ({cells} cells, 0 mismatches)', flush=True)
-
-
 def main():
-    if platform.system() != 'Linux' or not shutil.which('nvcc'):
-        raise SystemExit('Run this comparison in a Linux NVIDIA GPU runtime (Google Colab). Existing results were not changed.')
-    gpu_info = command(['nvidia-smi'])
-    environment = {
-        'timestampUTC': datetime.now(timezone.utc).isoformat(),
-        'platform': platform.platform(), 'cpu': command(['lscpu']),
-        'gpu': gpu_info, 'cudaCompiler': command(['nvcc', '--version']),
-        'cpuCompiler': command(['g++', '--version']),
-        'cpuFlags': '-O3 -std=c++17', 'cudaFlags': '-O3 -std=c++17',
-        'gridSizes': SIZES, 'iterations': ITERATIONS, 'runs': RUNS,
-        'seed': 42, 'boundary': 'outside-domain cells dead',
-        'cpuThreads': 1, 'blockSize': [16, 16],
-        'validation': 'exact byte-per-cell comparison before timing sweep and every repetition',
-        'gpuTotalTiming': 'steady_clock: H2D + simulation + synchronized D2H; excludes allocation/context/warm-up',
-        'gpuSimulationTiming': 'CUDA events around 100 launches; includes device timeline gaps between launches',
-        'sourceSHA256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
-                         for p in [ROOT/'cpu/game_of_life_cpu.cpp', ROOT/'cuda/game_of_life_cuda.cu']}
-    }
-    # Temporary binaries avoid accidentally executing stale binaries after a compile failure.
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--cuda', action='store_true', help='Run on a Colab NVIDIA GPU')
+    args = parser.parse_args()
+    kind = 'CUDA' if args.cuda else 'CPU'
+    compiler = shutil.which('clang++') if platform.system() == 'Darwin' else shutil.which('g++')
+    if not compiler:
+        raise SystemExit('C++ compiler missing. On Mac: xcode-select --install')
+    if args.cuda and not shutil.which('nvcc'):
+        raise SystemExit('CUDA requires a Colab NVIDIA GPU runtime. Do not install CUDA on your Mac.')
+    hardware = command(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader']) if args.cuda else (
+        command(['sysctl', '-n', 'machdep.cpu.brand_string']) if platform.system() == 'Darwin' else command(['lscpu']))
+    source = 'cuda/game_of_life_cuda.cu' if args.cuda else 'cpu/game_of_life_cpu.cpp'
+    data = dict(schemaVersion=1, implementation=kind, iterations=ITERATIONS,
+                gridSizes=SIZES, runs=RUNS, seed=42, boundary='dead-exterior',
+                initializer='lcg32-msb-v1', rule='B3/S23',
+                createdAt=datetime.now(timezone.utc).isoformat(),
+                environment=dict(hardware=hardware, platform=platform.platform(),
+                                 compiler=command(['nvcc' if args.cuda else compiler, '--version']),
+                                 flags='-O3 -std=c++17'),
+                timingScope='100 simulation iterations; excludes allocation, initialization, validation and export',
+                sourceSHA256=hashlib.sha256((ROOT/source).read_bytes()).hexdigest(), results=[])
+    if args.cuda:
+        data['totalTimingScope'] = 'H2D + simulation + synchronized D2H; excludes allocation and warm-up'
+        data['blockSize'] = [16, 16]
     with tempfile.TemporaryDirectory() as directory:
         temp = Path(directory)
-        cpu, gpu, tests = [temp / name for name in ('cpu', 'gpu', 'tests')]
-        command(['g++', '-O3', '-std=c++17', 'tests/test_cpu.cpp', '-o', tests])
-        print(command([tests]), flush=True)
-        command(['g++', '-O3', '-std=c++17', 'cpu/game_of_life_cpu.cpp', '-o', cpu])
-        command(['nvcc', '-O3', '-std=c++17', 'cuda/game_of_life_cuda.cu', '-o', gpu])
-        a, b = temp/'cpu.bin', temp/'gpu.bin'
-        # Odd/even iterations exercise pointer parity; nonmultiples exercise partial blocks.
-        for size in [1, 2, 3, 15, 16, 17, 31, 33, 65]:
-            for generations in [1, 2, 100]:
-                command([cpu, size, generations, a])
-                command([gpu, size, generations, b])
-                validate(a, b, size*size)
-        # Verify all assignment sizes before starting the measured sweep.
-        for size in SIZES:
-            command([cpu, size, ITERATIONS, a])
-            command([gpu, size, ITERATIONS, b])
-            validate(a, b, size*size)
-        records = []
-        for size in SIZES:
-            samples = []
+        cpu, gpu, test = temp/'cpu', temp/'gpu', temp/'test'
+        command([compiler, '-O3', '-std=c++17', 'tests/test_cpu.cpp', '-o', test])
+        print(command([test]), flush=True)
+        command([compiler, '-O3', '-std=c++17', 'cpu/game_of_life_cpu.cpp', '-o', cpu])
+        if args.cuda:
+            command(['nvcc', '-O3', '-std=c++17', source, '-o', gpu])
+            # Correctness only: the Colab CPU is NOT the measured CPU dataset.
+            for n in [1, 2, 3, 15, 16, 17, 31, 33]:
+                for iterations in [1, 2, 100]:
+                    command([cpu, n, iterations, temp/'reference'])
+                    command([gpu, n, iterations, temp/'actual'])
+                    if (temp/'reference').read_bytes() != (temp/'actual').read_bytes():
+                        raise RuntimeError(f'CUDA validation failed: {n}, {iterations}')
+        for n in SIZES:
+            samples, totals, digest = [], [], None
+            if args.cuda:
+                command([cpu, n, ITERATIONS, temp/'reference'])
+                reference = (temp/'reference').read_bytes()
             for repetition in range(RUNS):
-                outputs = {}
-                # Alternate execution order to reduce systematic ordering bias.
-                order = [('cpu', cpu, a), ('gpu', gpu, b)]
-                if repetition % 2: order.reverse()
-                for name, executable, destination in order:
-                    outputs[name] = fields(command([executable, size, ITERATIONS, destination]))
-                validate(a, b, size*size)
-                c, g = outputs['cpu'], outputs['gpu']
-                samples.append({'cpuTimeMs': timing(c, 'Execution time (ms)'),
-                                'gpuKernelTimeMs': timing(g, 'Kernel execution time (ms)'),
-                                'gpuTotalTimeMs': timing(g, 'Total GPU time (inc. transfers) (ms)')})
-            means = {key: statistics.mean(row[key] for row in samples) for key in samples[0]}
-            record = {'gridSize': size, 'cells': size*size, 'iterations': ITERATIONS,
-                      'runs': RUNS, 'blockSize': '16x16', **means,
-                      'speedup': means['cpuTimeMs']/means['gpuKernelTimeMs'],
-                      'speedupTotal': means['cpuTimeMs']/means['gpuTotalTimeMs'],
-                      'validation': 'PASSED', 'mismatchedCells': 0,
-                      'gpuName': g['GPU name'], 'checksum': c['Checksum'],
-                      'livingCells': int(c['Living cells']), 'samples': samples,
-                      'stddevMs': {key: statistics.stdev(row[key] for row in samples) for key in means}}
-            records.append(record)
-            print(f'{size}x{size}: CPU {means["cpuTimeMs"]:.3f} ms, CUDA {means["gpuKernelTimeMs"]:.3f} ms, speedup {record["speedup"]:.2f}x', flush=True)
-    # Export only after the entire sweep succeeds. No partial or CPU-only comparison.
+                result = fields(command([gpu if args.cuda else cpu, n, ITERATIONS, temp/'actual']))
+                grid = (temp/'actual').read_bytes()
+                if len(grid) != n*n or any(cell > 1 for cell in grid):
+                    raise RuntimeError('Invalid grid output')
+                if args.cuda and grid != reference:
+                    raise RuntimeError(f'CUDA validation failed at {n}')
+                current = hashlib.sha256(grid).hexdigest()
+                if digest is not None and digest != current:
+                    raise RuntimeError('Non-deterministic output')
+                digest = current
+                samples.append(timing(result, 'Kernel execution time (ms)' if args.cuda else 'Execution time (ms)'))
+                if args.cuda:
+                    totals.append(timing(result, 'Total GPU time (inc. transfers) (ms)'))
+                print(f'{kind} {n}x{n}, run {repetition+1}/{RUNS}: {samples[-1]:.3f} ms', flush=True)
+            row = dict(gridSize=n, cells=n*n, executionTimeMs=statistics.mean(samples),
+                       stddevMs=statistics.stdev(samples), samplesMs=samples,
+                       finalGridSHA256=digest, livingCells=int(result['Living cells']),
+                       validation='exact-cpu-reference' if args.cuda else 'cpu-tests-and-repeatability')
+            if totals:
+                row.update(totalTimeMs=statistics.mean(totals), totalSamplesMs=totals)
+            data['results'].append(row)
     destination = ROOT/'results'
     destination.mkdir(exist_ok=True)
-    (destination/'benchmark_results.json').write_text(json.dumps(records, indent=2)+'\n')
-    (destination/'benchmark_environment.json').write_text(json.dumps(environment, indent=2)+'\n')
-    columns = [key for key in records[0] if key not in ('samples', 'stddevMs')]
-    with (destination/'benchmark_results.csv').open('w', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(records)
-    print('Exported validated results and environment metadata to results/.')
+    path = destination/f'{kind.lower()}_results.json'
+    pending = path.with_suffix('.tmp')
+    pending.write_text(json.dumps(data, indent=2)+'\n')
+    pending.replace(path)
+    print(f'Saved {path}', flush=True)
+    if not args.cuda:
+        print('Next: python3 -m http.server 8080 --bind 127.0.0.1\nOpen http://127.0.0.1:8080/visualizer/')
 
 
 if __name__ == '__main__':

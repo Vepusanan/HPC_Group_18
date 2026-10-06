@@ -1,103 +1,73 @@
-> **Draft — pending verified Colab results.** The existing numerical claims have not been reconciled with the current results files. Checksum agreement does not establish zero mismatched cells. Use the revised Colab notebook to obtain exact validation, timings and environment metadata before submitting this document.
+# Three-minute presentation script
 
-# Three-Minute Video Presentation Script
-## Conway’s Game of Life: High Performance Computing CPU vs. CUDA Analysis
-**Author:** HPC Group 18  
-**Target Duration:** Exactly 3 Minutes (180 seconds)  
-**Word Count:** ~410 words (Target delivery speed: ~135–140 words per minute)
+**Topic:** Conway’s Game of Life — local CPU versus Colab CUDA  
+**Audience:** High Performance Computing assignment assessment  
+**Version:** Current measured CPU results; CUDA execution pending
 
----
+The narration below is suitable for the project's current status. It contains no invented GPU measurements. Read only the quoted narration; screen directions are not spoken. Aim to finish in 2:50–2:58 and verify the recorded duration. Rehearsal, rather than word count alone, determines whether the video meets the three-minute limit.
 
-### Segment 1: Problem & Conway's Game of Life (0:00 – 0:30)
+## 0:00–0:30 — Problem and rules
 
-**[Visual Cue / On Screen]:**  
-*Show the Interactive Simulation on the Web Dashboard running a 256×256 grid. Highlight the 4 rules card and generation counter advancing to 100.*
+**Show:** Dashboard title, then briefly start and pause the Game of Life animation.
 
-**[Speaker Narration]:**  
-"Hello everyone. Today I'm presenting our High Performance Computing project: accelerating Conway’s Game of Life by comparing a sequential C++ CPU baseline against a massively parallel CUDA GPU implementation.
+> Our project compares CPU and CUDA implementations of Conway’s Game of Life. Each cell is alive or dead and considers eight neighbours. A live cell survives with two or three neighbours; otherwise it dies. A dead cell becomes alive with exactly three. All cells update simultaneously. We test five grid sizes for exactly one hundred generations.
 
-Conway's Game of Life is a discrete 2D cellular automaton where each cell is either dead or alive. In every generation, a cell updates synchronously based on its eight Moore neighbours: a live cell survives with two or three neighbours, a dead cell reproduces with exactly three, and all other cells die of under- or overpopulation. 
+## 0:30–1:10 — CPU implementation and experiment
 
-We implement a zero-boundary condition and benchmark all grids across exactly 100 generations."
+**Show:** `updateGrid()` and `runSimulation()` in the CPU source, then the CPU results table.
 
----
+> The CPU implementation runs locally on an Apple M1 Mac. It stores the two-dimensional grid in contiguous memory and processes cells using nested loops. One buffer holds the current generation and another receives the next. Swapping pointers avoids copying the grid. Positions outside the domain count as dead. We use seed forty-two and three repetitions per size. A monotonic clock measures only the simulation, excluding initialization and printing. The runner saves the actual samples and averages as JSON.
 
-### Segment 2: CPU 2D Implementation (0:30 – 1:10)
+## 1:10–1:50 — CUDA implementation and validation
 
-**[Visual Cue / On Screen]:**  
-*Show the Architecture Diagram (Section 3) on the CPU side, followed by a brief highlight of `cpu/game_of_life_cpu.cpp` focusing on contiguous allocation and `std::swap`.*
+**Show:** CUDA thread-coordinate calculation, 16 × 16 launch configuration and Colab notebook.
 
-**[Speaker Narration]:**  
-"On the CPU, rather than using fragmented arrays of pointers or nested vectors—which cause severe pointer chasing and cache misses—we allocate the entire $N \times N$ grid as a single, contiguous 1D memory buffer. 
+> The CUDA implementation is prepared for an NVIDIA GPU in Google Colab. Each valid thread updates one cell, using sixteen-by-sixteen thread blocks. Both buffers remain on the GPU for all one hundred generations. The measured run transfers input once and returns the final grid once. CUDA events measure simulation time; a host clock also measures computation plus transfers. The notebook checks CUDA output against a CPU reference. That Colab CPU is used for correctness, not our performance comparison.
 
-Coordinates are mapped in row-major order: `row * N + col`. This ensures adjacent cells reside in consecutive memory addresses, maximizing L1 and L2 cache line prefetching.
+## 1:50–2:25 — Measured results and graphs
 
-To prevent race conditions without copying memory, we use double-buffering. We maintain `currentGrid` and `nextGrid`, and simply swap their pointers in constant time after each generation. 
+**Show:** CPU time-growth chart and the empty CUDA comparison state.
 
-Timing is strictly isolated to the 100 simulation iterations using high-resolution chrono clocks."
+> Our measured CPU averages range from about twenty-three milliseconds at two hundred and fifty-six squared to five-point-three-seven seconds at four thousand and ninety-six squared. Larger grids show roughly fourfold time growth when the cell count quadruples. Some samples vary substantially, so we retain every run. CUDA measurements are still pending. Uploading the completed CUDA JSON will calculate CPU time divided by GPU time. Those ratios will compare different machines and compilers.
 
----
+## 2:25–2:50 — Performance choices
 
-### Segment 3: CUDA Implementation & Parallelisation (1:10 – 1:50)
+**Show:** Buffer swapping and the dashboard’s implementation explanation.
 
-**[Visual Cue / On Screen]:**  
-*Switch to the CUDA Architecture diagram on the Web Dashboard. Highlight the 2D thread block grid ($16 \times 16$) and the CUDA kernel in `cuda/game_of_life_cuda.cu`.*
+> We use contiguous arrays, preallocated buffers, pointer swapping and compiler optimization. CUDA also avoids transfers between generations. These reduce avoidable work, but we have not measured each optimization separately. The browser animation demonstrates the rules; it is not a CUDA benchmark. CPU correctness tests have passed, and the notebook will check GPU results before export.
 
-**[Speaker Narration]:**  
-"Our CUDA architecture parallelizes the simulation by assigning one independent GPU thread to compute exactly one cell. 
+## 2:50–3:00 — Conclusion
 
-We configure 2D thread blocks of $16 \times 16$, giving 256 threads—or exactly 8 warps per block. Because `threadIdx.x` increments along columns, all 32 threads in a warp access consecutive 4-byte integers in DRAM. The memory controller coalesces these into single 128-byte bus transactions.
+**Show:** Results table and project title.
 
-Crucially, both grids remain resident in GPU VRAM across all 100 generations. We swap device pointers on the host in $O(1)$ time, eliminating costly PCIe bus transfers between iterations."
+> The CPU results establish our baseline. Validated Colab measurements are the remaining step before we can conclude where CUDA provides an advantage.
 
 ---
 
-### Segment 4: Performance Results & Scalability (1:50 – 2:25)
+## Update after the actual CUDA run
 
-**[Visual Cue / On Screen]:**  
-*Scroll to Section 4 (Benchmark Table) and Section 5 (Interactive Performance Charts). Hover over the 4096×4096 row and the Speedup bar chart.*
+Before recording a final completed-experiment presentation:
 
-**[Speaker Narration]:**  
-"To ensure complete consistency, both implementations were benchmarked in the same Google Colab session using an NVIDIA Tesla T4 GPU and an Intel Xeon CPU with `-O3` optimization.
+1. Run the current notebook, retain its validation output and download the CUDA JSON.
+2. Upload it to the dashboard and confirm matching grid fingerprints.
+3. Replace the results narration with the measured comparison below. Fill every bracket from the same current datasets; do not read the brackets aloud.
+4. Change “is prepared for” to “runs on” in the CUDA section. Change “will check GPU results” to “checked GPU results” only after those checks pass.
+5. Replace the closing sentence with one supported finding. Rehearse again and stay below three minutes.
 
-Across five grid sizes, our results demonstrate massive acceleration:
-At $256 \times 256$, CUDA achieves a $19.5\times$ kernel speedup, but end-to-end speedup is $8.9\times$ due to PCIe transfer latency—empirically demonstrating Amdahl’s Law.
+**Replacement results narration, 1:50–2:25:**
 
-However, as problem size scales to $4096 \times 4096$—over 16.7 million cells—the CPU takes nearly 7 seconds, while the CUDA kernel completes in just 58.4 milliseconds. That is a peak kernel speedup of **$117.4\times$**, and an end-to-end speedup of **$49.2\times$**!
+> Both implementations completed one hundred generations at every tested size. At [selected grid], the CPU averaged [CPU milliseconds] and CUDA simulation averaged [CUDA milliseconds], giving [simulation speedup] times speedup. Including transfers, the speedup was [total speedup]. The highest simulation speedup occurred at [actual peak grid]. The graph shows [observed scaling trend]. These results compare our Mac CPU with the assigned Colab GPU, so hardware and compiler differences contribute to the outcome.
 
-Both implementations produced identical living cell counts and identical 64-bit checksums, confirming 100% mathematical correctness."
+**Replacement conclusion, 2:50–3:00:**
 
----
+> For our tested configurations, [one measured finding]. Exact validation in Colab and matching result fingerprints support the correctness of the comparison.
 
-### Segment 5: Optimisations Used (2:25 – 2:50)
+## Recording checklist
 
-**[Visual Cue / On Screen]:**  
-*Scroll to Section 6 (Performance Insights Cards) and Section 7 (Comparison Matrix).*
-
-**[Speaker Narration]:**  
-"What drove this performance? 
-First, memory coalescing and device residency: at $4096 \times 4096$, the simulation moves over 67 gigabytes of data at a sustained memory bandwidth of **$230\text{ GB/s}$**—saturating over 70% of the Tesla T4's hardware limit.
-
-Second, occupancy: large grids deploy over 65,000 thread blocks, allowing the GPU's 40 Streaming Multiprocessors to completely hide global memory access latency through zero-overhead warp scheduling. 
-
-We also evaluated shared memory tiling, but found that hardware L1 caching on Turing already delivers optimal throughput without extra synchronization stalls."
-
----
-
-### Segment 6: Conclusion (2:50 – 3:00)
-
-**[Visual Cue / On Screen]:**  
-*Show the top KPI Banner with the Peak 117.4x Speedup and 100% Bitwise Match badges.*
-
-**[Speaker Narration]:**  
-"In conclusion, modern GPUs excel at memory-bandwidth-bound spatial stencils like Conway's Game of Life. When problem sizes are large enough to saturate device occupancy, CUDA delivers transformative, two-order-of-magnitude acceleration while preserving perfect bitwise simulation accuracy. 
-
-Thank you!"
-
----
-
-### Presentation Preparation Tips & Recording Checklist
-1. **Screen Setup:** Open `visualizer/index.html` in your browser in full-screen mode (press F11).
-2. **Smooth Scrolling:** Use the anchor buttons (Overview → Simulation → Architecture → Benchmarks → Charts) to transition smoothly as you speak.
-3. **Pacing:** Practice reading the script alongside a stopwatch. Keep each segment strictly within its allotted 30–40 second window.
-4. **Tone:** Clear, confident, and focused on HPC terminology (coalescing, occupancy, bandwidth saturation, Amdahl's Law, bitwise verification).
+- [ ] Use the same measurements in the report, dashboard and narration.
+- [ ] Present the current-status script if CUDA remains unmeasured; do not describe the experiment as complete.
+- [ ] For the completed experiment, replace every bracket and remove outdated pending statements.
+- [ ] Show readable source and chart labels; avoid scrolling through long files.
+- [ ] Distinguish simulation time from transfer-inclusive time.
+- [ ] Record a short microphone test before the full take.
+- [ ] Replay the finished video and confirm its duration is no more than 3:00.

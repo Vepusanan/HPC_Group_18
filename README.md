@@ -1,108 +1,112 @@
-# Conway's Game of Life: High Performance Computing Benchmark (CPU vs. CUDA)
-### Assignment 1 — High Performance Computing (Group 18)
+# Conway’s Game of Life — Mac CPU vs Colab CUDA
 
-An empirical High Performance Computing investigation comparing sequential CPU execution against massively parallel GPU acceleration using NVIDIA CUDA for Conway's Game of Life.
+A small experiment: **100 generations, five grid sizes, three runs per size**.
+The CPU runs on your Mac. CUDA runs on an NVIDIA GPU in Google Colab.
+The dashboard compares these different systems; this is not an isolated measure
+of GPU parallelism on identical hardware.
 
-Both implementations are benchmarked in an identical **Google Colab environment** (NVIDIA Tesla T4 GPU + Intel Xeon CPU) to ensure fairness, consistency, and eliminate cross-architecture hardware distortion.
+## 1. Run the CPU benchmark on your Mac
 
----
+Open Terminal in this project folder:
 
-## Repository Structure
+```bash
+cd /Users/vepusanan/Desktop/HPC_Group_18
+python3 run_benchmarks.py
+```
+
+If a compiler is missing, run `xcode-select --install`, finish installation, and
+retry. Python 3 is required. No Python packages are needed.
+
+The runner compiles with `-O3`, runs correctness tests, benchmarks
+256, 512, 1024, 2048 and 4096 squared, and saves **results/cpu_results.json**.
+Every measured sample starts from seed 42 and runs exactly 100 generations.
+Close heavy applications before benchmarking. Keep all samples, including slow
+ones; variability is displayed rather than silently filtered.
+
+## 2. Open the dashboard
+
+```bash
+python3 -m http.server 8080 --bind 127.0.0.1
+```
+
+Open **http://127.0.0.1:8080/visualizer/**. Serve from the project root, not the
+visualizer directory. CPU results load automatically. No npm install, external
+chart library, backend or account is needed. Stop the server with Control+C.
+If port 8080 is occupied, use 8081 and change the URL accordingly.
+
+## 3. Run CUDA in Colab
+
+Upload **notebooks/Conway_Game_of_Life_HPC_Colab.ipynb** to Google Colab.
+Select **Runtime → Change runtime type → GPU**, connect, then **Run all**.
+Download **cuda_results.json** from the final cell.
+
+The notebook contains the source code and runner. Its CPU execution is used only
+for exact CUDA correctness checks; it does not replace your Mac CPU measurements.
+Do not configure CUDA locally on macOS. See [COLAB_INSTRUCTIONS.md](COLAB_INSTRUCTIONS.md).
+
+## 4. Compare
+
+Click **Upload CUDA JSON** in the dashboard and select the downloaded file.
+Charts, speedups, the comparison table and measured insights update immediately.
+Use **Download comparison CSV** to save the joined data. Save the original CUDA
+JSON in `results/` for your submission too. Uploaded data stays in the page's
+memory; after reloading, upload CUDA again. CPU data reloads from disk automatically.
+
+The importer accepts only the current schema. It checks iterations, seed, rules,
+boundaries, timings, repetitions and sizes. Overlapping grid sizes are paired;
+unmatched sizes remain visible without a speedup. A final-grid SHA-256 mismatch
+excludes that pair from speedup calculations. Matching hashes are strong evidence
+of cross-machine consistency, not a byte-for-byte comparison inside the browser.
+The CUDA runner separately checks every output byte against its CPU reference.
+
+## Active files
 
 ```text
-.
-├── cpu/
-│   ├── game_of_life_cpu.cpp          # Optimized sequential C++ implementation (-O3, contiguous 1D array)
-│   └── game_of_life_terminal_vis.cpp # Optional ANSI terminal visualizer
-├── cuda/
-│   ├── game_of_life_cuda.cu          # Baseline CUDA implementation (16x16 thread blocks, coalesced loads)
-│   └── game_of_life_cuda_shared.cu   # Optional shared-memory tiled CUDA implementation (18x18 halo tile)
-├── notebooks/
-│   └── Conway_Game_of_Life_HPC_Colab.ipynb # Pre-configured, ready-to-run Google Colab Notebook
-├── results/
-│   ├── benchmark_results.json        # Structured JSON benchmark results (consumed by visualizer)
-│   ├── benchmark_results.csv         # Complete CSV benchmark telemetry
-│   └── results.csv                   # Summary CSV for report
-├── visualizer/                       # Interactive HPC Performance Dashboard & Simulation
-│   ├── index.html                    # Single-page engineering dashboard
-│   ├── style.css                     # Glassmorphic responsive styling & themes
-│   └── app.js                        # Canvas simulation, Chart.js graphs, dynamic insights
-├── COLAB_INSTRUCTIONS.md             # Step-by-step Google Colab copy-paste instructions
-├── REPORT.md                         # Comprehensive academic technical report (12 sections)
-├── PRESENTATION_SCRIPT.md            # 3-minute video presentation script with exact timestamps
-├── run_benchmarks.py                 # Automated benchmark harness with multi-run averaging
-└── README.md                         # Project documentation
+run_benchmarks.py               # CPU by default; --cuda in Colab
+cpu/game_of_life_cpu.cpp        # Contiguous logical 2D array, double buffering
+cuda/game_of_life_cuda.cu       # Baseline 16×16 CUDA blocks
+notebooks/                     # Self-contained CUDA notebook
+results/cpu_results.json        # Measured Mac CPU results
+results/cuda_results.json       # Downloaded CUDA results (when available)
+visualizer/                    # HTML, CSS, JS; local SVG charts
+README.md / COLAB_INSTRUCTIONS.md
+REPORT.md / PRESENTATION_SCRIPT.md
 ```
 
----
+`tests/` holds CPU tests. `scripts/build_colab_notebook.py` is only for maintainers:
+after editing the runner or C++ files, run it to update the notebook. Ordinary
+execution needs neither the builder nor manual source uploads.
 
-## Core HPC Features & Design Decisions
+## Measurements and correctness
 
-### 1. Sequential CPU Implementation (`cpu/game_of_life_cpu.cpp`)
-- **Contiguous 1D Allocation:** Uses row-major index mapping `index = row * N + col` in a single contiguous memory block (`std::vector<int>`), maximizing L1/L2 cacheline prefetching and eliminating pointer chasing.
-- **Double Buffering:** Maintains `currentGrid` and `nextGrid`, swapping pointers in $O(1)$ time via `std::swap` to eliminate redundant memory copying between generations.
-- **Dead Borders:** Strictly implements zero boundary conditions (cells outside $N \times N$ evaluate to dead).
-- **Isolated Timing:** Timed strictly around the 100 simulation iterations using `std::chrono::high_resolution_clock`.
+- CPU: monotonic host-clock interval around 100 updates.
+- CUDA: event interval around 100 launches, including device timeline gaps.
+- CUDA total: host-clock H2D + simulation + synchronized D2H.
+- Allocation, initialization, warm-up, validation, printing and export are excluded.
+- CUDA warms the kernel once in each process and restores the input before timing.
+  CPU measurements retain ordinary initial cache effects; document this difference.
+- Both versions use the same LCG initializer, seed 42, B3/S23 and dead exterior.
+- Three samples are averaged; sample standard deviation is retained.
+- Speedup = mean CPU simulation time / mean CUDA simulation time. Total speedup
+  uses CUDA total time as denominator. Ratios describe the measured systems only.
+- Export occurs only after the entire run succeeds. Existing output survives a
+  failed run, so check timestamps before submitting.
 
-### 2. Massively Parallel CUDA Implementation (`cuda/game_of_life_cuda.cu`)
-- **1 Thread per Cell:** Maps each cell to a unique CUDA thread: `col = blockIdx.x * blockDim.x + threadIdx.x`.
-- **$16 \times 16$ 2D Thread Blocks:** 256 threads per block (8 warps). Consecutive threads access adjacent columns, guaranteeing **100% coalesced 128-byte DRAM transactions**.
-- **Device-Resident Memory:** Grids remain in GPU VRAM across all 100 iterations. Only device pointers swap on the host in $O(1)$ time.
-- **Dual Timing Instrumentation:** Measures pure CUDA kernel time (100 iterations) using `cudaEvent_t`, as well as total end-to-end time ($H \to D$ + 100 iterations + $D \to H$).
+CPU tests:
 
-### 3. Verification & Bitwise Correctness
-Both programs use an identical Linear Congruential PRNG (Seed 42) and compute:
-1. Total living cell count after 100 iterations.
-2. A 64-bit cumulative polynomial checksum (`checksum = checksum * 1315423911 + cell`).
-- Both programs yield **100% identical checksums and living cell counts (0 mismatched cells)** across all evaluated grid sizes.
-
----
-
-## Benchmark Results (Google Colab — NVIDIA Tesla T4 vs Intel Xeon)
-
-| Grid Size | Total Cells ($N^2$) | Iterations | CPU Time (ms) | CUDA Kernel (ms) | CUDA Total (ms) | Kernel Speedup | Total Speedup | Verified Living | 64-Bit Checksum |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **$256 \times 256$** | 65,536 | 100 | **21.82** | **1.12** | 2.45 | **$19.47\times$** | $8.90\times$ | 5,877 | `2188031159639976069` |
-| **$512 \times 512$** | 262,144 | 100 | **86.42** | **1.84** | 4.10 | **$46.96\times$** | $21.07\times$ | 23,852 | `3838351066650152210` |
-| **$1024 \times 1024$** | 1,048,576 | 100 | **345.18** | **4.62** | 10.85 | **$74.71\times$** | $31.82\times$ | 99,296 | `14789994132222743192` |
-| **$2048 \times 2048$** | 4,194,304 | 100 | **1,418.52** | **15.20** | 38.60 | **$93.30\times$** | $36.75\times$ | 390,059 | `17074688330164608745` |
-| **$4096 \times 4096$** | 16,777,216 | 100 | **6,854.21** | **58.40** | 139.22 | **$117.36\times$** | **$49.23\times$** | 1,584,269 | `15231916768216565527` |
-
----
-
-## How to Run on Google Colab
-
-See [`COLAB_INSTRUCTIONS.md`](COLAB_INSTRUCTIONS.md) for detailed step-by-step instructions.
-
-### Quick Start:
-1. Open [Google Colab](https://colab.research.google.com).
-2. Upload `notebooks/Conway_Game_of_Life_HPC_Colab.ipynb`.
-3. Set runtime to **GPU (T4 GPU)** via `Runtime` → `Change runtime type`.
-4. Run all cells (`Runtime` → `Run all`).
-5. Download `benchmark_results.json` and `benchmark_results.csv` to update the dashboard.
-
----
-
-## Interactive HPC Dashboard & Visualizer
-
-Open `visualizer/index.html` in any web browser, or launch a local web server:
 ```bash
-python3 -m http.server 8080 --directory visualizer
+mkdir -p build
+clang++ -std=c++17 -O1 -g -fsanitize=address,undefined tests/test_cpu.cpp -o build/test_cpu
+./build/test_cpu
+node tests/test_dashboard.cjs
 ```
-Navigate to `http://localhost:8080`.
 
-**Dashboard Highlights:**
-- **Executive KPI Banner:** Peak speedup ($117.4\times$), CPU time, CUDA time, and validation badges.
-- **Interactive Canvas Visualizer:** Seed 42 PRNG, custom drawing, pattern stamping (Glider, Pulsar, Gosper Gun, Acorn), and live checksum telemetry.
-- **Architecture Visualizer:** CPU serial instruction flow vs. GPU 2D thread block coalesced architecture.
-- **Interactive Performance Charts:** Logarithmic execution time curves and speedup bar charts powered by Chart.js.
-- **Dynamic Insights:** Automated analysis of Amdahl's Law, PCIe latency, and $230\text{ GB/s}$ sustained memory bandwidth saturation.
-- **Custom Upload:** Upload custom Colab benchmark JSON or CSV files to visualize live results instantly.
+Node is optional and needed only for the dashboard development test. The browser
+itself requires no Node installation. CUDA verification is pending until Colab runs.
 
----
+## Deliverables
 
-## Documentation & Deliverables
-
-- **Full Academic Technical Report:** [`REPORT.md`](REPORT.md) (12 sections covering theory, implementation, profiling, Amdahl's law, and optimizations).
-- **3-Minute Presentation Script:** [`PRESENTATION_SCRIPT.md`](PRESENTATION_SCRIPT.md) (exact timestamped narration script for video recording).
-- **Colab Execution Guide:** [`COLAB_INSTRUCTIONS.md`](COLAB_INSTRUCTIONS.md).
+Submit the source, executed notebook, both original JSON files, comparison CSV,
+report, chart screenshots and a video of at most three minutes. Record the actual
+Mac CPU, Colab GPU, compiler versions and timing definitions from the JSON files.
+Do not infer GPU speedups before uploading real CUDA results. Optional optimizations are not required for this baseline project.

@@ -20,3 +20,8 @@ game_of_life_cuda
 # OS files
 .DS_Store
 Thumbs.db
+
+build/
+__pycache__/
+*.pyc
+*.bin

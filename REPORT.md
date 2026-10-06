@@ -1,323 +1,231 @@
-> **Draft — pending verified Colab results.** The existing numerical claims have not been reconciled with the current results files. Checksum agreement does not establish zero mismatched cells. Use the revised Colab notebook to obtain exact validation, timings and environment metadata before submitting this document.
+# Performance Comparison of CPU and CUDA Implementations of Conway’s Game of Life
 
-# High Performance Computing Technical Report
-## Accelerated Simulation of Conway’s Game of Life: Sequential CPU Baseline vs. CUDA GPU Parallelization
+**High Performance Computing — Group 18**  
+**Experiment date:** 6 October 2026  
+**Execution environments:** Local Apple M1 CPU and Google Colab NVIDIA GPU
 
-**Course / Module:** High Performance Computing  
-**Group:** Group 18  
-**Repository:** [HPC_Group_18](https://github.com/Vepusanan/HPC_Group_18)  
-**Target Architecture:** NVIDIA Tesla T4 GPU (Google Colab) & Intel Xeon CPU  
-**Date:** October 2026  
+> **Experimental status:** CPU measurements are complete. The CUDA implementation and execution notebook are prepared, but no current CUDA result file is available. Consequently, this report presents measured CPU results and the CUDA comparison methodology without claiming GPU timings, speedups or completed GPU validation.
 
----
+## Abstract
 
-### Executive Summary
+This project implements Conway’s Game of Life using a sequential C++ CPU program and a CUDA C++ GPU program. Both use identical deterministic initialization, finite-grid boundary conditions and double buffering. The experiment evaluates five square grids, from 256 × 256 to 4096 × 4096, with exactly 100 generations per measured run and three repetitions per size. The CPU program was executed locally on an Apple M1 Mac. Its mean execution time increased from 22.711 ms for the smallest grid to 5,370.054 ms for the largest. The CUDA program is intended to execute on an NVIDIA GPU in Google Colab, with separate simulation and transfer-inclusive timing. A static dashboard loads the CPU JSON and accepts the CUDA JSON to calculate speedups and display the comparison. Since the two programs execute on different machines, eventual speedup values will describe the measured configurations rather than isolate the effect of GPU parallelization.
 
-This report presents a comprehensive High Performance Computing (HPC) empirical investigation and architectural analysis of Conway’s Game of Life. We implement, verify, and benchmark two distinct computing paradigms under an identical, strictly controlled execution environment:
-1. **A sequential CPU implementation** developed in C++ using a 1D contiguous dynamic memory layout, compiler optimizations (`-O3`), and $O(1)$ buffer pointer swapping.
-2. **A massively parallel GPU implementation** developed in CUDA C/C++ employing a 2D Cartesian block/grid thread decomposition ($16 \times 16$), coalesced 128-byte global memory transactions, device-resident memory persistence, and dual-interval timing instrumentation (pure kernel compute vs. end-to-end PCIe transfer).
+## 1. Introduction and objective
 
-Both implementations were executed within the **same Google Colab environment** across five standard problem scales ($256 \times 256$ to $4096 \times 4096$) for 100 generations, with 3-run arithmetic averaging. Correctness was verified via a deterministic Linear Congruential PRNG (Seed 42) and a 64-bit polynomial checksum, achieving **100% bitwise parity (0 mismatched cells)** across all runs.
+The objective is to compare the execution time and technical characteristics of CPU and CUDA implementations of the same cellular automaton. Game of Life is suitable for this experiment because each output cell depends only on a small neighbourhood in the previous generation. Cells within a generation can therefore be computed independently, while successive generations must remain ordered.
 
-The experimental results demonstrate a **peak kernel speedup of $117.36\times$** and an **end-to-end speedup of $49.23\times$** at $4096 \times 4096$ (16.78 million cells). At small problem sizes ($256 \times 256$), Amdahl’s Law and PCIe bus latency dominate, limiting end-to-end speedup to $8.90\times$. At scale, the CUDA kernel sustains an effective memory throughput exceeding $230\text{ GB/s}$, saturating over 70% of the Tesla T4’s peak theoretical bandwidth.
+The project follows a simple workflow:
 
----
-
-### Table of Contents
-1. [Introduction](#1-introduction)
-2. [Conway's Game of Life & Cellular Automata Theory](#2-conways-game-of-life--cellular-automata-theory)
-3. [CPU Baseline Implementation Architecture](#3-cpu-baseline-implementation-architecture)
-4. [CUDA GPU Parallel Implementation Architecture](#4-cuda-gpu-parallel-implementation-architecture)
-5. [Experimental Setup & Consistent Hardware Environment](#5-experimental-setup--consistent-hardware-environment)
-6. [Benchmarking Methodology & Correctness Verification](#6-benchmarking-methodology--correctness-verification)
-7. [Experimental Results & Telemetry](#7-experimental-results--telemetry)
-8. [Performance Analysis & HPC Insights](#8-performance-analysis--hpc-insights)
-9. [Technical Characteristics Comparison](#9-technical-characteristics-comparison)
-10. [CUDA Architectural Optimizations & Shared Memory Trade-Offs](#10-cuda-architectural-optimizations--shared-memory-trade-offs)
-11. [System Limitations & Bottlenecks](#11-system-limitations--bottlenecks)
-12. [Conclusion](#12-conclusion)
-
----
-
-### 1. Introduction
-
-High Performance Computing relies heavily on mapping discrete numerical grid simulations and spatial stencils onto modern parallel hardware. Stencil algorithms—in which each point in a multi-dimensional array is updated iteratively as a function of its localized geometric neighbours—represent one of the "Seven Dwarfs" of scientific computing (as classified by the UC Berkeley parallel computing motif taxonomy).
-
-Conway's Game of Life is a canonical 2D spatial stencil. While computationally simple at the cellular level, simulating large grid dimensions ($N \ge 1024$) over many generations imposes massive memory throughput demands. Evaluating a $4096 \times 4096$ lattice across 100 generations requires computing over **1.67 billion individual cell state transitions** and performing over **15 billion neighbor cell memory reads**.
-
-On sequential CPU architectures, this workload is severely bottlenecked by instruction serialization and the "memory wall"—the latency discrepancy between CPU clock cycles and main system DRAM access. Conversely, modern Graphic Processing Units (GPUs) provide thousands of lightweight streaming cores engineered specifically for high-throughput, data-parallel workloads. 
-
-The objective of this assignment is to design, implement, empirically benchmark, and analyze the performance scaling, memory bandwidth utilization, and technical characteristics of Conway's Game of Life across CPU and GPU architectures under a fair, non-fabricated experimental methodology.
-
----
-
-### 2. Conway's Game of Life & Cellular Automata Theory
-
-Conway’s Game of Life is a zero-player, discrete-time cellular automaton defined on a two-dimensional orthogonal grid of square cells. Each cell $C(r, c)$ possesses one of two states:
-$$\text{State}(r, c) \in \{0, 1\}$$
-where $0$ designates **Dead** and $1$ designates **Alive**.
-
-#### 2.1 The Moore Neighborhood
-The state of cell $(r, c)$ at generation $t + 1$ depends strictly on its state at generation $t$ and the sum of its eight immediate orthogonal and diagonal neighbors (the Moore neighborhood of range $r=1$):
-$$\mathcal{N}(r, c) = \sum_{dr=-1}^{1} \sum_{dc=-1}^{1} \left[ \text{Grid}_t(r + dr, c + dc) \right] - \text{Grid}_t(r, c)$$
-
-#### 2.2 The Four Transition Rules
-At each generation step, all cells transition synchronously according to Conway's four deterministic rules:
-1. **Underpopulation:** Any live cell with fewer than two live neighbours dies ($\text{State}_{t+1} = 0$).
-2. **Survival:** Any live cell with two or three live neighbours lives on to the next generation ($\text{State}_{t+1} = 1$).
-3. **Overpopulation:** Any live cell with more than three live neighbours dies ($\text{State}_{t+1} = 0$).
-4. **Reproduction:** Any dead cell with exactly three live neighbours becomes a live cell ($\text{State}_{t+1} = 1$).
-5. **Default Inaction:** All other dead cells remain dead.
-
-#### 2.3 Boundary Condition: Zero Boundary (Dead Borders)
-In scientific computing, stencil boundaries can be modeled as periodic (toroidal wrap-around) or Dirichlet / zero boundary (fixed borders). Per the assignment specification, we implement a **zero boundary condition**: any neighbor access $(r + dr, c + dc)$ that falls outside the coordinate bounds $[0, N-1] \times [0, N-1]$ evaluates strictly to state $0$ (Dead). This avoids boundary coordinate wrap-around arithmetic while maintaining identical physical simulation limits between CPU and GPU.
-
----
-
-### 3. CPU Baseline Implementation Architecture
-
-The sequential CPU baseline is implemented in C++ (`cpu/game_of_life_cpu.cpp`). To provide a fair, rigorous, and competitive HPC baseline, standard anti-patterns (such as fragmented pointer arrays or dynamic heap allocation inside loops) were strictly avoided.
-
-#### 3.1 Contiguous 1D Dynamic Allocation for 2D Memory Layout
-A naive 2D dynamic array in C++ is frequently allocated using pointer-to-pointer structures (`int**`) or nested vectors (`std::vector<std::vector<int>>`). This introduces severe performance penalties:
-- **Pointer Chasing & Cache Misses:** Each row is allocated as an independent heap chunk, scattered across virtual memory. Dereferencing `grid[row][col]` requires two dependent memory lookups: reading the row pointer from an array of pointers, followed by reading the element.
-- **Cache Line Fragmentation:** CPU hardware prefetchers (L1/L2 Stream Prefetchers) cannot predict memory jumps across discontinuous heap chunks.
-
-**Design Decision:** The $N \times N$ grid is allocated as a single, contiguous $1\text{D}$ memory buffer of $N^2 \times \text{sizeof}(int)$ bytes using `std::vector<int>`. A 2D logical coordinate $(row, col)$ is mapped via row-major index arithmetic:
-$$\text{Index}(row, col) = row \times N + col$$
-This guarantees that consecutive columns within the same row are stored adjacently in physical RAM. When the CPU accesses `grid[row * N + col]`, the hardware prefetcher automatically loads the entire 64-byte cache line (containing 16 consecutive 4-byte integers), yielding high spatial cache locality and near-zero cache miss penalties along the inner loop.
-
-#### 3.2 Double Buffering & $O(1)$ Buffer Pointer Swapping
-A fundamental requirement of cellular automata is that all cell updates within generation $t \to t+1$ must occur synchronously. Updating cells in-place within a single buffer causes a **read-after-write hazard**: subsequent neighbor evaluations would read newly updated generation $t+1$ values rather than generation $t$ values, corrupting simulation physics.
-
-**Design Decision:** We maintain two separate memory buffers: `currentGrid` (read-only for generation $t$) and `nextGrid` (write-only for generation $t+1$). At the end of each generation, we perform an $O(1)$ pointer exchange:
-```cpp
-std::swap(currentGrid, nextGrid);
+```text
+Mac CPU benchmark → cpu_results.json → local dashboard
+Colab CUDA benchmark → cuda_results.json → upload → comparison
 ```
-No cell data is copied. Over 100 generations, this eliminates $100 \times N^2 \times 4$ bytes of memory traffic (saving over 6.7 GB of redundant memcpy operations for $N = 4096$).
 
-#### 3.3 Modular Code Structure
-The implementation is partitioned into clear, reusable functions:
-- `initializeGrid(int* grid, int N, unsigned int seed)`: Populates the lattice using a deterministic LCG PRNG (Seed 42).
-- `countNeighbors(const int* grid, int N, int row, int col)`: Computes the 8-neighbor Moore sum with zero-boundary bounds checking.
-- `updateGrid(const int* currentGrid, int* nextGrid, int N)`: Applies Conway's transition rules for all $N^2$ cells across one generation.
-- `runSimulation(int*& currentGrid, int*& nextGrid, int N, int iterations)`: Executes the outer generational loop with double-buffered pointer swapping.
+The MacBook Air M1 is used for CPU execution, development and presentation. CUDA execution is assigned to Google Colab because the local machine cannot run the NVIDIA CUDA implementation. No backend, database or cloud deployment is required for the dashboard.
 
-#### 3.4 Isolated High-Resolution Timing
-Benchmark timing is isolated strictly to the 100-generation simulation loop using `std::chrono::high_resolution_clock`. Grid memory allocation, random initial state generation, bitwise checksum generation, and terminal printing are completely excluded from the timer.
+## 2. Conway’s Game of Life
 
----
+Each cell stores either 0 (dead) or 1 (alive). Its eight surrounding positions form its neighbourhood. The next generation follows four rules:
 
-### 4. CUDA GPU Parallel Implementation Architecture
+1. A live cell with fewer than two live neighbours dies.
+2. A live cell with two or three live neighbours survives.
+3. A live cell with more than three live neighbours dies.
+4. A dead cell with exactly three live neighbours becomes alive.
 
-The accelerated GPU implementation is written in CUDA C/C++ (`cuda/game_of_life_cuda.cu`).
+This is also described as **B3/S23**: birth with three neighbours, survival with two or three. Every cell reads the previous generation, so births and deaths occur simultaneously.
 
-#### 4.1 Massive Thread Mapping: One Thread per Cell
-In contrast to the CPU’s nested sequential loops, the GPU implementation maps the problem across thousands of concurrent execution threads. Each CUDA thread is assigned to compute the state transition of exactly one cell $(row, col)$:
-```cuda
-int col = blockIdx.x * blockDim.x + threadIdx.x;
-int row = blockIdx.y * blockDim.y + threadIdx.y;
+The experiment uses a finite square grid with a **dead exterior**. Positions outside the grid contribute zero to the neighbour count. Cells on the outermost rows and columns still evolve; there is no wrap-around.
 
-if (row >= N || col >= N) return;
+Both programs generate their initial grids in row-major order with the same 32-bit linear congruential generator and seed 42. The high bit of each generated value supplies a cell state. Repeating a configuration therefore reproduces its initial grid.
+
+## 3. CPU implementation
+
+The CPU program, `cpu/game_of_life_cpu.cpp`, represents a logical two-dimensional array using one contiguous `std::vector<int>` allocation per buffer. Cell `(row, col)` is accessed at `row * N + col`. This arrangement avoids separately allocated rows and provides a straightforward layout for sequential traversal and comparison with CUDA.
+
+The main functions are:
+
+| Function | Purpose |
+|---|---|
+| `initializeGrid()` | Create the deterministic initial state |
+| `countNeighbors()` | Sum neighbouring cells within the domain |
+| `nextCellState()` | Apply the Game of Life rules |
+| `updateGrid()` | Calculate one complete next generation |
+| `runSimulation()` | Repeat updates and swap buffer pointers |
+
+Two preallocated buffers hold the current and next grids. Nested loops traverse every cell, reading only the current buffer and writing only the next. After a generation, the program swaps pointers in constant time. Updating one buffer in place would be incorrect because later cells could read values already changed in that generation.
+
+The implementation uses one host thread and no explicit CPU parallelism. The optimizing compiler may still apply instruction-level optimization or vectorization. CPU simulation time is measured with `std::chrono::steady_clock` around the update loop and pointer swaps. Initialization, allocation, final-grid export and printed output are outside this interval.
+
+## 4. CUDA implementation
+
+The baseline in `cuda/game_of_life_cuda.cu` assigns one valid CUDA thread to each output cell. Thread coordinates are calculated from the block index, block dimensions and thread index. Threads beyond the grid dimensions return without writing output.
+
+The launch uses **16 × 16 threads per block**, or 256 threads. The number of blocks in each dimension is rounded upward to cover the domain. This is a practical baseline configuration, not a claim of optimal occupancy. A warp spans two 16-cell row segments, and neighbouring columns access adjacent addresses. Actual transaction efficiency would require profiling.
+
+The host initializes the grid and allocates two device buffers. After an untimed warm-up, the original input is restored. During the measured simulation, both buffers remain in GPU memory. Each launch reads the current grid, writes the next grid and is followed by a host-side pointer swap. Launches in the same default stream preserve generation order. Only the initial input and final output are transferred during the measured total interval.
+
+CUDA calls and kernel launches are checked for errors, and the stop event is synchronized before simulation timing is read. The implementation uses global memory; an optional shared-memory variant is not required for this experiment.
+
+## 5. Experimental environment
+
+The available CPU metadata comes directly from `results/cpu_results.json`.
+
+| Item | CPU experiment | CUDA experiment |
+|---|---|---|
+| Location | Local Mac | Google Colab GPU runtime |
+| Processor | Apple M1 | Pending actual allocation |
+| Operating system | macOS 26.2, ARM64 | Pending runtime metadata |
+| Compiler | Apple clang 17.0.0, clang-1700.4.4.1 | `nvcc`; version pending |
+| Compilation flags | `-O3 -std=c++17` | Configured: `-O3 -std=c++17` |
+| Recorded CPU run time | 6 October 2026, 15:01:22 Asia/Colombo | Pending |
+| Execution status | Completed | Not yet measured |
+
+**The CPU benchmark is not executed in the same environment as the GPU benchmark.** The Colab workflow also compiles a CPU reference, but that program is used for correctness checks. Its timing is not the CPU dataset used by the dashboard.
+
+## 6. Benchmark methodology
+
+### 6.1 Workload and repetition
+
+Each measured run starts from the same initial state for its grid size and executes exactly **100 generations**. Three separate runs are collected for each of the following sizes:
+
+| Grid | Cells | Cell updates across 100 generations |
+|---|---:|---:|
+| 256 × 256 | 65,536 | 6,553,600 |
+| 512 × 512 | 262,144 | 26,214,400 |
+| 1024 × 1024 | 1,048,576 | 104,857,600 |
+| 2048 × 2048 | 4,194,304 | 419,430,400 |
+| 4096 × 4096 | 16,777,216 | 1,677,721,600 |
+
+These sizes increase the cell count by a factor of four at each step and allow scaling to be observed over a substantial range. Two four-byte integer grids at the largest size occupy approximately 128 MiB, excluding other allocations.
+
+The runner retains all timing samples and reports their arithmetic mean and sample standard deviation. Slow samples are not discarded. The standard deviation describes observed variation; it is not a confidence interval.
+
+### 6.2 Timing scopes
+
+| Metric | Measurement method | Included work |
+|---|---|---|
+| CPU simulation | Monotonic host clock | 100 updates and pointer swaps |
+| CUDA simulation | CUDA events | Device timeline interval around 100 launches |
+| CUDA total | Monotonic host clock | H2D copy, simulation, synchronization and D2H copy |
+
+CUDA simulation timing can include gaps between launches. CUDA total excludes device allocation, context setup, warm-up and export, so it is not the duration of the entire executable. The difference between total and simulation timing includes transfer and host/synchronization effects; it does not isolate pure transfer latency.
+
+The CUDA process performs one untimed warm-up kernel before restoring the initial state. CPU timings retain ordinary initial cache effects. This methodological difference must be considered alongside the hardware differences.
+
+### 6.3 Speedup definition
+
+For each compatible grid size:
+
+```text
+Simulation speedup = mean CPU simulation time / mean CUDA simulation time
+Total speedup      = mean CPU simulation time / mean CUDA total time
 ```
-For a $4096 \times 4096$ lattice, the problem is decomposed into **16,777,216 distinct threads** running across the GPU's hardware Streaming Multiprocessors.
 
-#### 4.2 2D Block Geometry ($16 \times 16$) & Global Memory Coalescing
-The kernel launch configuration is parameterized with 2D thread blocks:
-```cuda
-dim3 blockSize(16, 16); // 256 threads per block
-dim3 gridSize((N + 15) / 16, (N + 15) / 16);
+A ratio above one means CUDA is faster under the selected timing definition. Ratios are calculated from the mean times, not by averaging per-run ratios. No speedup can currently be reported because the CUDA measurements are pending.
+
+## 7. Correctness verification
+
+CPU tests have passed for all rule combinations, a stable block, a blinker oscillator, small and boundary-sensitive grids, and 100 successive generations against an independent reference. The reference distributes each live cell’s contribution to its neighbours instead of using the production neighbour-counting loop. Address and undefined-behaviour sanitizer checks also passed during development.
+
+For each measured CPU size, repeated runs produced the same final-grid SHA-256 fingerprint. This establishes repeatability for those runs, alongside the algorithm tests.
+
+The Colab runner is configured to test tiny grids, partial blocks and odd/even generation counts. It then compares each measured CUDA output byte-for-byte against the CPU reference for that size. Failed validation prevents a new dataset from being exported. **These GPU checks remain to be executed.**
+
+The dashboard checks compatible experiment settings and matches CPU and CUDA records by grid size and final-grid SHA-256. A mismatch suppresses that pair’s speedup. Matching fingerprints provide strong cross-machine consistency evidence, but are distinct from an exact browser-side comparison of the full grids.
+
+## 8. Measured results
+
+### 8.1 CPU execution time
+
+All values below are milliseconds for 100 generations, rounded to three decimal places. Unrounded measurements are retained in the JSON file.
+
+| Grid | Run 1 | Run 2 | Run 3 | Mean | Sample standard deviation |
+|---|---:|---:|---:|---:|---:|
+| 256 × 256 | 29.835 | 19.318 | 18.982 | 22.711 | 6.171 |
+| 512 × 512 | 75.730 | 76.571 | 75.020 | 75.773 | 0.776 |
+| 1024 × 1024 | 299.884 | 301.914 | 301.502 | 301.100 | 1.073 |
+| 2048 × 2048 | 1,303.447 | 1,227.509 | 1,236.406 | 1,255.787 | 41.514 |
+| 4096 × 4096 | 6,376.190 | 4,878.801 | 4,855.170 | 5,370.054 | 871.420 |
+
+### 8.2 CPU scaling
+
+| Increase in grid dimension | Cell-count factor | Mean CPU time factor |
+|---|---:|---:|
+| 256 → 512 | 4.00× | 3.34× |
+| 512 → 1024 | 4.00× | 3.97× |
+| 1024 → 2048 | 4.00× | 4.17× |
+| 2048 → 4096 | 4.00× | 4.28× |
+
+Mean CPU time grows at every tested size. Beyond the smallest pair, multiplying the cell count by four increases execution time by approximately four, consistent with the algorithm’s linear work per cell at a fixed generation count. This observation does not establish a specific hardware bottleneck.
+
+Variation is not uniform. The 256 × 256 measurements have a standard deviation of about 27.2% of their mean, while the 4096 × 4096 measurements have about 16.2%. The first measured sample is noticeably slower than the other two at both sizes. The saved data cannot identify whether scheduling, cache behaviour, clock changes or another factor caused this difference. All samples are retained; additional repetitions would improve the assessment of stability.
+
+### 8.3 CUDA comparison status
+
+| Grid | CPU mean (ms) | CUDA simulation (ms) | CUDA total (ms) | Speedup |
+|---|---:|---|---|---|
+| 256 × 256 | 22.711 | Pending | Pending | Not calculated |
+| 512 × 512 | 75.773 | Pending | Pending | Not calculated |
+| 1024 × 1024 | 301.100 | Pending | Pending | Not calculated |
+| 2048 × 2048 | 1,255.787 | Pending | Pending | Not calculated |
+| 4096 × 4096 | 5,370.054 | Pending | Pending | Not calculated |
+
+The present evidence cannot determine the highest GPU speedup, a crossover size or whether GPU overhead dominates smaller workloads. After a validated CUDA run, this table and its interpretation should be replaced with the dashboard’s comparison export. The dashboard uses a descriptive 2× threshold for a substantial advantage; that threshold is not a statistical significance test.
+
+## 9. Technical characteristics and performance choices
+
+| Area | CPU implementation | CUDA implementation |
+|---|---|---|
+| Execution | One host thread traverses cells | Threads organized into blocks update cells concurrently |
+| Memory | Contiguous host arrays and hardware caches | Contiguous device arrays and device caches |
+| Synchronization | Sequential loop order | Ordered launches and final synchronization |
+| Data movement | Pointer swaps between host buffers | Pointer swaps on device-buffer addresses; initial/final transfers |
+| Implementation effort | Simpler allocation and debugging | Device allocation, launch geometry and error handling |
+| Work and storage | O(iterations × N²) work, O(N²) storage | Same total work and storage orders; parallel scheduling |
+| Expected tradeoff | Avoids GPU transfer/launch costs | Can exploit sufficient parallel work; benefit must be measured |
+
+The implemented performance choices are contiguous storage, preallocation, constant-time buffer swaps, compiler optimization and device-resident simulation. These choices remove avoidable allocation and copying. Their individual speedup contributions have not been measured through controlled before/after experiments. No claim is made that the selected block size is optimal or that memory bandwidth is saturated.
+
+## 10. Visualization and exported data
+
+The dashboard uses HTML, CSS, JavaScript and local SVG charts. It loads `results/cpu_results.json` automatically and accepts a CUDA JSON upload without manual entry of values. It shows mean times, variability, grid sizes, iterations, simulation speedup and transfer-inclusive speedup. Unsupported comparisons remain empty rather than displaying example measurements.
+
+Insights are derived from compatible measurements: the actual maximum speedup, time growth between tested sizes, whether speedup is monotonic, and the relationship between CUDA simulation and total time. JSON exports retain environment metadata, raw timing samples and result fingerprints; the dashboard can export a combined CSV.
+
+A separate 48 × 48 interactive JavaScript simulation provides Start, Pause, Step, Reset and Randomize controls. It demonstrates the rules only. Its animation is not part of the C++ or CUDA benchmark.
+
+## 11. Limitations
+
+- The Mac CPU and Colab GPU use different hardware, operating environments and compilers. Speedup describes the complete measured configurations.
+- The CPU baseline is single-threaded, not an optimized multicore implementation. Results should not be generalized to all CPU approaches.
+- Only three samples and one deterministic initial state are used per size. This limits statistical precision and workload coverage.
+- CPU and GPU warm-up treatment differs. Neither background load nor thermal and clock behaviour is fully controlled.
+- Timing excludes allocation and startup. Application-level execution time can therefore exceed the reported intervals.
+- Dead-exterior boundaries differ from an infinite or periodic Game of Life universe.
+- GPU correctness and performance conclusions are pending the actual Colab run.
+
+## 12. Conclusion
+
+The CPU experiment demonstrates a working, tested implementation with reproducible final states across five grid sizes and exactly 100 generations per run. Mean CPU time increases from approximately 22.7 ms to 5.37 seconds as the workload grows. The larger-size results exhibit roughly proportional growth with cell count, while some configurations show substantial run-to-run variation.
+
+The CUDA baseline, validation workflow and upload-based comparison interface are prepared. Completion of the empirical CPU-versus-CUDA comparison requires running the notebook, saving its validated results and updating this report with the measured GPU timings and speedups. Until then, the project supports conclusions about CPU scaling, but not GPU superiority.
+
+## Appendix — Reproduction and completion
+
+From the project root on the Mac:
+
+```bash
+python3 run_benchmarks.py
+python3 -m http.server 8080 --bind 127.0.0.1
 ```
-**HPC Justification for $16 \times 16$ Block Dimension:**
-1. **Warp Alignment:** 256 threads per block equals exactly 8 warps ($256 / 32 = 8$). This ensures zero warp divergence at block boundaries and maximizes active warp slots on each Streaming Multiprocessor (SM).
-2. **Occupancy & Register Pressure:** A 256-thread block size provides an ideal compromise between register usage per thread and the maximum active blocks per SM (up to 16 blocks per SM on the Turing architecture).
-3. **100% Coalesced Global Memory Transactions:** In row-major storage, consecutive memory addresses correspond to adjacent columns. Because `threadIdx.x` increments along columns, all 32 threads within a single warp access 32 consecutive 4-byte integers ($32 \times 4 = 128$ bytes). The GPU memory controller fuses these concurrent requests into a **single 128-byte DRAM transaction**, achieving peak memory bus efficiency.
 
-#### 4.3 Device-Resident Memory & Zero-Copy Pointer Swapping
-A common pitfall in GPU computing is transferring grid buffers across the PCIe bus between every generation. Transferring an $N=4096$ grid back and forth 100 times would move $100 \times 2 \times 67.1\text{ MB} \approx 13.4\text{ GB}$ across the host-device interconnect, completely destroying performance.
+Open `http://127.0.0.1:8080/visualizer/`. In Google Colab, upload `notebooks/Conway_Game_of_Life_HPC_Colab.ipynb`, enable a GPU runtime, run all cells and download `cuda_results.json`. Upload that file to the dashboard and save the comparison CSV.
 
-**Design Decision:** We allocate two global device arrays (`d_current` and `d_next`) in GPU VRAM via `cudaMalloc` before the simulation commences. The initial grid is transferred from host to device **exactly once** ($H \to D$). Throughout all 100 iterations, the grid data remains permanently resident on the GPU. Between kernel launches, the host simply swaps the two 64-bit device pointers:
-```cuda
-int* temp = d_current;
-d_current = d_next;
-d_next = temp;
-```
-Once all 100 generations conclude, the final state is transferred back to the CPU **exactly once** ($D \to H$).
+For final submission, retain both original JSON datasets, the executed notebook, source code, this report, chart screenshots and the presentation video. Complete the GPU environment fields and results table only from the current validated CUDA export. Rerunning the CPU benchmark replaces its result file; update the report if those measurements change.
 
-#### 4.4 Dual-Interval Timing Instrumentation (Part 6 Requirement)
-To analyze both raw compute throughput and bus transfer bottlenecks, we record two separate timings:
-1. **CUDA Kernel / Simulation Time:** Measured using hardware `cudaEvent_t` timers (`cudaEventRecord` / `cudaEventElapsedTime`) strictly around the 100 kernel launches and pointer swaps.
-2. **Total End-to-End GPU Time:** Encompasses initial Host-to-Device transfer ($H \to D$), the 100 kernel iterations, and the final Device-to-Host transfer ($D \to H$).
+## References and project evidence
 
----
-
-### 5. Experimental Setup & Consistent Hardware Environment
-
-To eliminate cross-platform bias, **both the CPU baseline and CUDA GPU benchmarks were executed within the exact same Google Colab session node**.
-
-> [!IMPORTANT]
-> **Environmental Consistency Note:**  
-> The benchmarks were **not** compared against the user's local MacBook Air M1 CPU. Running the CPU version on macOS Apple Silicon and the CUDA version on an NVIDIA cloud GPU would introduce conflicting compiler targets, microarchitectures, and clock speeds, invalidating the speedup ratio. Executing both implementations on the Colab instance ensures a 100% fair and rigorous scientific comparison.
-
-| Environment Component | Specification Details |
-| :--- | :--- |
-| **Cloud Platform** | Google Colaboratory (Unified Linux Container) |
-| **Operating System** | Ubuntu 22.04.4 LTS (x86_64, Linux Kernel 6.6) |
-| **Host CPU Model** | Intel(R) Xeon(R) CPU @ 2.20GHz (2 vCPUs, 1 Socket, 2 Threads/Core) |
-| **CPU Cache Hierarchy** | L1d: 32 KB, L1i: 32 KB, L2: 1024 KB, L3: 55 MB Shared |
-| **Host System Memory** | 12.7 GB DRAM |
-| **Host C++ Compiler** | `g++` (Ubuntu 11.4.0-1ubuntu1~22.04) with `-O3 -std=c++17` |
-| **Target GPU Model** | **NVIDIA Tesla T4** (Turing Architecture, TU104) |
-| **GPU Compute Cores** | 2,560 CUDA Cores (40 Streaming Multiprocessors, 64 cores/SM) |
-| **GPU VRAM Capacity** | 15,360 MiB (16 GB) GDDR6 |
-| **GPU Memory Bus & Bandwidth** | 256-bit Memory Bus, **320.0 GB/s** Peak Theoretical Bandwidth |
-| **Compute Capability** | SM 7.5 (Turing) |
-| **CUDA Toolkit / Compiler** | NVIDIA CUDA Compiler (`nvcc`) Release 12.5, V12.5.82 with `-O3` |
-
----
-
-### 6. Benchmarking Methodology & Correctness Verification
-
-#### 6.1 Grid Dimension Selection
-We evaluate five grid dimensions spanning three orders of magnitude in cell count:
-- **$256 \times 256$:** 65,536 cells (Small scale, latency-dominated)
-- **$512 \times 512$:** 262,144 cells (Medium-small scale)
-- **$1024 \times 1024$:** 1,048,576 cells (Standard 1-Megacell HPC baseline)
-- **$2048 \times 2048$:** 4,194,304 cells (Large-scale lattice)
-- **$4096 \times 4096$:** 16,777,216 cells (Massive 16.8-Megacell stress test)
-
-#### 6.2 Generation Count & Repetition Averaging
-- **Generations:** Exactly **100 iterations** per grid size.
-- **Statistical Averaging:** Each grid configuration was executed across **3 independent runs**. The reported execution times represent the arithmetic mean ($\mu$). Run-to-run variance was minimal ($< 1.8\%$).
-
-#### 6.3 Mathematical Correctness Verification Protocol
-To prove beyond doubt that the GPU version did not alter simulation physics or introduce race conditions, a dual-layer verification protocol was enforced:
-1. **Deterministic PRNG:** Both programs initialize cell $(r, c)$ using an identical Linear Congruential Generator:
-   $$X_{n+1} = (1664525 \times X_n + 1013904223) \pmod{2^{32}}$$
-   $$\text{State}(r, c) = X_{n+1} \gg 31 \quad (\text{Seed } = 42)$$
-2. **Total Living Cell Count:** Sum of all active cells in the lattice after 100 generations: $\sum_{i=0}^{N^2-1} \text{Grid}_{100}[i]$.
-3. **64-Bit Polynomial Hash Checksum:** A cumulative hash combining every cell index and state:
-   $$\text{Checksum} = \sum_{i=0}^{N^2-1} \left( \text{Checksum} \times 1315423911 + \text{Grid}_{100}[i] \right) \pmod{2^{64}}$$
-
-If even a single cell diverges across the 16.78 million cells at generation 100, the checksum changes completely.
-
----
-
-### 7. Experimental Results & Telemetry
-
-The table below summarizes the official benchmark telemetry recorded on Google Colab. All values were directly measured by `run_benchmarks.py`.
-
-| Grid Size | Total Cells ($N^2$) | Iterations | CPU Time (ms) | CUDA Kernel (ms) | CUDA Total (ms) | Kernel Speedup | Total Speedup | Living Cells (100 gens) | 64-Bit Checksum | Correctness |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **$256 \times 256$** | 65,536 | 100 | **21.82** | **1.12** | 2.45 | **$19.47\times$** | $8.90\times$ | 5,877 | `2188031159639976069` | **PASSED (100%)** |
-| **$512 \times 512$** | 262,144 | 100 | **86.42** | **1.84** | 4.10 | **$46.96\times$** | $21.07\times$ | 23,852 | `3838351066650152210` | **PASSED (100%)** |
-| **$1024 \times 1024$** | 1,048,576 | 100 | **345.18** | **4.62** | 10.85 | **$74.71\times$** | $31.82\times$ | 99,296 | `14789994132222743192` | **PASSED (100%)** |
-| **$2048 \times 2048$** | 4,194,304 | 100 | **1,418.52** | **15.20** | 38.60 | **$93.30\times$** | $36.75\times$ | 390,059 | `17074688330164608745` | **PASSED (100%)** |
-| **$4096 \times 4096$** | 16,777,216 | 100 | **6,854.21** | **58.40** | 139.22 | **$117.36\times$** | **$49.23\times$** | 1,584,269 | `15231916768216565527` | **PASSED (100%)** |
-
-$$\text{Kernel Speedup} = \frac{\text{CPU Execution Time}}{\text{CUDA Kernel Time}} \qquad \text{Total Speedup} = \frac{\text{CPU Execution Time}}{\text{CUDA Total End-to-End Time}}$$
-
----
-
-### 8. Performance Analysis & HPC Insights
-
-#### 8.1 Scaling Trajectory: Why Speedup Climbs with Problem Size
-A critical observation in the benchmark data is that **speedup is not a fixed constant**; it expands monotonically as grid dimension $N$ increases:
-- At $256 \times 256$, kernel speedup is **$19.47\times$**.
-- At $1024 \times 1024$, kernel speedup reaches **$74.71\times$**.
-- At $4096 \times 4096$, kernel speedup peaks at **$117.36\times$**.
-
-**HPC Explanation:**
-On a GPU, achieving peak performance requires **saturating hardware occupancy**. The Tesla T4 possesses 40 Streaming Multiprocessors (SMs), each capable of executing up to 1,024 active threads concurrently (total hardware residency capacity = 40,960 threads).
-- For $N = 256$, the grid consists of only 256 thread blocks ($16 \times 16$). With 40 SMs, each SM receives on average only 6.4 blocks. Many warps stall waiting for memory transactions because there are insufficient active warps to interleave instruction issue.
-- For $N = 4096$, the simulation launches **65,536 thread blocks** ($16,777,216$ threads). Each SM receives 1,638 thread blocks over the course of execution. The warp scheduler has a virtually inexhaustible supply of active warps to issue, hiding global DRAM fetch latencies completely through fine-grained zero-overhead warp switching.
-
-#### 8.2 Amdahl's Law & PCIe Transfer Penalties on Small Workloads
-Comparing **Kernel Speedup** versus **Total End-to-End Speedup** provides a classic demonstration of **Amdahl’s Law**:
-$$\text{Speedup}_{\text{total}} = \frac{1}{(1 - P) + \frac{P}{S}}$$
-where $P$ is the parallel fraction and $(1 - P)$ represents the serial PCIe data transfer and runtime overhead.
-
-At $256 \times 256$:
-- Pure kernel computation takes **$1.12\text{ ms}$**.
-- Total GPU time is **$2.45\text{ ms}$**.
-- PCIe transfers ($H \to D$ and $D \to H$) plus driver launch latency consume **$1.33\text{ ms}$**—accounting for **$54.3\%$ of the total GPU turnaround time**! Consequently, total speedup drops from $19.47\times$ down to $8.90\times$.
-
-As $N$ scales to $4096$:
-- Computation time scales with $O(N^2 \times \text{iterations})$ to **$58.40\text{ ms}$**.
-- PCIe transfers scale with $O(N^2)$ (moving $67.1\text{ MB}$ twice across PCIe Gen3 x16, taking $\approx 80.8\text{ ms}$).
-- Because the simulation runs for 100 generations, keeping data resident on the device amortizes the fixed transfer cost, allowing end-to-end speedup to reach **$49.23\times$**.
-
-#### 8.3 Sustained Memory Bandwidth Utilization
-Conway’s Game of Life has very low **arithmetic intensity** ($\approx 0.1$ FLOP per byte transferred). Each cell update requires:
-- 8 neighbour memory reads + 1 self read $= 9 \times 4\text{ bytes} = 36\text{ bytes}$.
-- 1 cell state write $= 4\text{ bytes}$.
-- Total memory traffic per cell per generation $= 40\text{ bytes}$.
-
-For $N = 4096$ across 100 generations:
-$$\text{Total Data Moved} = 16,777,216 \text{ cells} \times 40 \text{ bytes} \times 100 \text{ gens} \approx 67.11 \times 10^9 \text{ bytes} = 67.11 \text{ GB}$$
-Executing in $58.40\text{ ms}$ ($0.0584\text{ s}$):
-$$\text{Effective Sustained Bandwidth} = \frac{67.11 \text{ GB}}{0.0584 \text{ s}} \approx \mathbf{229.8 \text{ GB/s}}$$
-The NVIDIA Tesla T4 possesses a theoretical peak memory bandwidth of $320.0\text{ GB/s}$. Achieving **$229.8\text{ GB/s}$ sustained throughput represents $71.8\%$ of theoretical peak bandwidth**, confirming that our global memory coalesced design effectively saturates the hardware memory bus.
-
----
-
-### 9. Technical Characteristics Comparison
-
-| Technical Dimension | Sequential CPU Implementation | CUDA GPU Parallel Implementation |
-| :--- | :--- | :--- |
-| **Source Language** | Modern C++ (C++17 standard) | CUDA C/C++ (NVCC compiler) |
-| **Core Abstraction** | Nested iteration loops (`for row`, `for col`) | 2D Thread Grid (`gridSize`, `blockSize`) |
-| **Execution Model** | Serial; 1 cell per CPU instruction pipeline | Massive data parallelism; 1 thread per cell |
-| **Thread Count** | 1 hardware thread (OS thread) | Up to 16,777,216 concurrent CUDA threads |
-| **Memory Subsystem** | Host DDR4 System RAM | High-bandwidth Device GDDR6 VRAM |
-| **Cache Behavior** | L1d/L2 cache prefetching over contiguous 1D array | L1/L2 hardware cache + 128-byte coalescing |
-| **Buffer Management** | Double-buffering via `std::swap` pointer swap | Double-buffering via host device pointer swap |
-| **PCIe Transfer Overhead** | None (Executes directly in host memory) | Incurred on initial $H \to D$ and final $D \to H$ |
-| **Timing Mechanism** | `std::chrono::high_resolution_clock` | Hardware CUDA Events (`cudaEventRecord`) |
-| **Time Complexity** | $O(N^2 \times \text{iterations})$ | $O(\frac{N^2}{P} \times \text{iterations})$ ($P = 2560$ cores) |
-| **4096 Runtime** | 6,854.2 ms (~6.85 seconds) | 58.4 ms (Kernel) / 139.2 ms (Total) |
-| **Observed Speedup** | $1.0\times$ (Reference Baseline) | **$19.47\times \to 117.36\times$ (Kernel Peak)** |
-
----
-
-### 10. CUDA Architectural Optimizations & Shared Memory Trade-Offs
-
-#### 10.1 Implemented Optimizations
-1. **Contiguous Row-Major Linearization:** Maps 2D spatial coordinates into a 1D linear buffer, eliminating memory fragmentation on both CPU and GPU.
-2. **Global Memory Access Coalescing:** Grouping threads by 16 in the X dimension guarantees that consecutive threads access adjacent 32-bit integers, collapsing 32 independent memory requests into a single 128-byte DRAM transaction.
-3. **Device-Resident Iterations ($O(1)$ Swapping):** Keeps the simulation state in GPU VRAM across all 100 iterations, swapping device pointers on the CPU host in negligible time ($< 0.001\text{ ms}$).
-4. **Loop Unrolling:** Applied `#pragma unroll` on internal stencil coordinate loops in device code, enabling the compiler to eliminate branch instructions and issue memory instructions in parallel.
-
-#### 10.2 Shared Memory Tiling Investigation (`cuda/game_of_life_cuda_shared.cu`)
-As required by Part 7, we investigated an optional second CUDA implementation utilizing **Shared Memory Tiling**.
-
-In a shared memory stencil:
-- Each $16 \times 16$ block cooperatively loads an **$18 \times 18$ tile** into on-chip SRAM (`__shared__ int s_tile[18][18]`), consisting of the 256 interior cells plus a 1-cell halo border along all four edges and corners.
-- Threads call `__syncthreads()` to enforce a memory barrier.
-- All 8 neighbor reads are subsequently serviced from fast on-chip shared memory ($\approx 1\text{ TB/s}$ bandwidth) rather than global DRAM.
-
-**HPC Trade-Off Analysis:**
-While shared memory tiling is vital for compute-intensive stencils (such as 3D wave equations or convolution filters), for Conway's Game of Life on modern NVIDIA architectures (Turing, Ampere, Ada), **global memory with hardware L1 caching performs almost identically or slightly faster**:
-1. **Low Arithmetic Intensity:** Because Game of Life performs only simple additions and comparisons per cell, the overhead of loading irregular halo cells with divergent conditional branches (`if (tx == 0)`, `if (ty == 0)`) introduces warp divergence.
-2. **Hardware L1 Cache Hits:** On Turing SMs, the unified L1 data cache and shared memory share a common 128 KB SRAM pool. The L1 cache automatically caches halo cells loaded by adjacent thread blocks with zero programmer overhead and zero barrier synchronization stalls (`__syncthreads()`).
-3. **Conclusion:** Our baseline coalesced global memory kernel with hardware L1 caching represents the superior, cleaner HPC design for this workload.
-
----
-
-### 11. System Limitations & Bottlenecks
-
-1. **Temporal Serialization across Generations:** While spatial parallelism within a generation is embarrassingly parallel ($16.8\text{M}$ independent cell evaluations), **generations are strictly serial**. Generation $t+1$ depends mathematically on generation $t$. Parallelism cannot be extracted across time without complex spatial-temporal tiling (e.g. diamond tiling).
-2. **PCIe Interconnect Bandwidth on Small Workloads:** For small lattices ($N \le 256$), data movement latency across the PCIe bus limits overall acceleration. GPUs should not be deployed for small cellular automata unless the data is generated and consumed directly on the GPU.
-3. **Single-Node VRAM Capacity:** On a 16 GB Tesla T4 GPU, the maximum grid dimension for double-buffered 32-bit integers is approximately $40,000 \times 40,000$. Exceeding this boundary requires distributed multi-GPU domain decomposition using MPI.
-
----
-
-### 12. Conclusion
-
-This project successfully implemented, verified, and benchmarked Conway's Game of Life across sequential CPU and massively parallel CUDA GPU architectures under an identical Google Colab environment.
-
-**Key Findings:**
-- **Massive Acceleration:** CUDA achieved a **$117.36\times$ kernel speedup** and a **$49.23\times$ end-to-end speedup** for a $4096 \times 4096$ lattice, reducing simulation time from nearly 7 seconds on the CPU down to 58 milliseconds on the GPU.
-- **Occupancy & Bandwidth Saturation:** Speedup scales with grid dimension because larger grids provide sufficient thread blocks to saturate all 40 SMs, sustaining over **$229\text{ GB/s}$ of effective memory throughput** ($71.8\%$ of theoretical peak).
-- **Communication vs. Computation:** Amdahl’s Law was empirically validated on small grids ($256 \times 256$), where PCIe transfer overhead consumed over $54\%$ of total runtime.
-- **Flawless Mathematical Parity:** The deterministic Seed 42 PRNG and 64-bit checksum confirmed 100% bitwise correctness across all grid sizes, demonstrating that parallel computing delivered massive throughput gains without sacrificing algorithmic fidelity.
+1. [Conway’s Game of Life — rules and background](https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life).
+2. [NVIDIA CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html).
+3. [Recorded CPU measurements and environment](results/cpu_results.json).
+4. [CPU implementation](cpu/game_of_life_cpu.cpp), [CUDA implementation](cuda/game_of_life_cuda.cu), [benchmark runner](run_benchmarks.py), and [CPU correctness tests](tests/test_cpu.cpp).
