@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "implementation": "CUDA",
+  "iterations": 100,
+  "gridSizes": [
+    256,
+    512,
+    1024,
+    2048,
+    4096
+  ],
+  "runs": 3,
+  "seed": 42,
+  "boundary": "dead-exterior",
+  "initializer": "lcg32-msb-v1",
+  "rule": "B3/S23",
+  "createdAt": "2026-10-07T14:33:15.278637+00:00",
+  "environment": {
+    "hardware": "Tesla T4",
+    "platform": "Linux-6.6.122+-x86_64-with-glibc2.39",
+    "compiler": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Wed_Aug_20_01:58:59_PM_PDT_2025\nCuda compilation tools, release 13.0, V13.0.88\nBuild cuda_13.0.r13.0/compiler.36424714_0",
+    "flags": "-O3 -std=c++17"
+  },
+  "timingScope": "100 simulation iterations; excludes allocation, initialization, validation and export",
+  "sourceSHA256": "df4b34c8a2f65c18a143ce13288e6acd25b2e81fa2031435b89cabbb45667f66",
+  "results": [
+    {
+      "gridSize": 256,
+      "cells": 65536,
+      "executionTimeMs": 0.34695466666666663,
+      "stddevMs": 0.011452304804419642,
+      "samplesMs": [
+        0.34096,
+        0.36016,
+        0.339744
+      ],
+      "finalGridSHA256": "a1025fa75acdd2ffade6460803f1a4b8b927626f6e4a502166c8723c7d83b806",
+      "livingCells": 5877,
+      "validation": "exact-cpu-reference",
+      "totalTimeMs": 0.5052796666666667,
+      "totalSamplesMs": [
+        0.497761,
+        0.52886,
+        0.489218
+      ]
+    },
+    {
+      "gridSize": 512,
+      "cells": 262144,
+      "executionTimeMs": 0.8255146666666666,
+      "stddevMs": 0.0039151752621477244,
+      "samplesMs": [
+        0.82144,
+        0.829248,
+        0.825856
+      ],
+      "finalGridSHA256": "9af4cabb7cde8ad64741d80ab6d5c915b7fba0f0a16b146e7b79d64cbccd8311",
+      "livingCells": 23852,
+      "validation": "exact-cpu-reference",
+      "totalTimeMs": 1.9802823333333333,
+      "totalSamplesMs": [
+        1.430956,
+        3.07486,
+        1.435031
+      ]
+    },
+    {
+      "gridSize": 1024,
+      "cells": 1048576,
+      "executionTimeMs": 4.79808,
+      "stddevMs": 0.49981300925846217,
+      "samplesMs": [
+        5.144352,
+        5.0248,
+        4.225088
+      ],
+      "finalGridSHA256": "357b321f7dcfefd7eb71f874e8dd3a3c8cd4bd73e194f6e349382f297512a71b",
+      "livingCells": 99296,
+      "validation": "exact-cpu-reference",
+      "totalTimeMs": 6.680598666666667,
+      "totalSamplesMs": [
+        7.409591,
+        6.859846,
+        5.772359
+      ]
+    },
+    {
+      "gridSize": 2048,
+      "cells": 4194304,
+      "executionTimeMs": 19.205653666666667,
+      "stddevMs": 0.0034174938673430105,
+      "samplesMs": [
+        19.206881,
+        19.208288,
+        19.201792
+      ],
+      "finalGridSHA256": "6bf091cb65eeed8961db82d5028ddf32e653d1123f6b319ca4b154af1adcb19d",
+      "livingCells": 390059,
+      "validation": "exact-cpu-reference",
+      "totalTimeMs": 25.715382,
+      "totalSamplesMs": [
+        25.419966,
+        26.220628,
+        25.505552
+      ]
+    },
+    {
+      "gridSize": 4096,
+      "cells": 16777216,
+      "executionTimeMs": 89.43692766666668,
+      "stddevMs": 12.009633112146364,
+      "samplesMs": [
+        97.346748,
+        95.346466,
+        75.617569
+      ],
+      "finalGridSHA256": "fe12fd971471617307eb0a0a17e01bb65d7ad15ab1996be5a2b0ec9454016a99",
+      "livingCells": 1584269,
+      "validation": "exact-cpu-reference",
+      "totalTimeMs": 118.55159,
+      "totalSamplesMs": [
+        126.567369,
+        125.14996,
+        103.937441
+      ]
+    }
+  ],
+  "totalTimingScope": "H2D + simulation + synchronized D2H; excludes allocation and warm-up",
+  "blockSize": [
+    16,
+    16
+  ]
+}
